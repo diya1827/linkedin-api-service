@@ -2,6 +2,7 @@ import re
 import json
 import html as html_lib
 import logging
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -324,16 +325,28 @@ def _extract_picture(item: dict) -> str | None:
     Profile pictures live in different places across shapes:
       - classic MiniProfile: item["picture"]["com.linkedin.common.VectorImage"]
       - dash Profile:        item["profilePicture"]["displayImageReference"]["vectorImage"]
+                        or   item["profilePicture"]["displayImageReferenceResolutionResult"]["vectorImage"]
     """
+    if not isinstance(item, dict):
+        return None
+
     pic = item.get("picture") or {}
-    vector = pic.get("com.linkedin.common.VectorImage") or pic.get("vectorImage")
-    url = _vector_image_url(vector)
-    if url:
-        return url
+    if isinstance(pic, dict):
+        vector = pic.get("com.linkedin.common.VectorImage") or pic.get("vectorImage")
+        url = _vector_image_url(vector)
+        if url:
+            return url
 
     profile_pic = item.get("profilePicture") or {}
-    ref = profile_pic.get("displayImageReference") or {}
-    return _vector_image_url(ref.get("vectorImage"))
+    if isinstance(profile_pic, dict):
+        ref = (
+            profile_pic.get("displayImageReferenceResolutionResult")
+            or profile_pic.get("displayImageReference")
+            or {}
+        )
+        if isinstance(ref, dict):
+            return _vector_image_url(ref.get("vectorImage"))
+    return None
 
 
 def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResponse:
@@ -344,7 +357,21 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     (`com.linkedin.voyager.identity.profile.*`) and dash
     (`com.linkedin.voyager.dash.identity.profile.*`) schemas.
     """
-    included = data.get("included", []) or []
+    included = [it for it in (data.get("included", []) or []) if isinstance(it, dict)]
+    # dash objects reference each other by URN; build a lookup to resolve them.
+    by_urn = {it["entityUrn"]: it for it in included if it.get("entityUrn")}
+
+    def _resolve_company(item: dict) -> str | None:
+        """Company name may be inline (classic) or a URN reference (dash)."""
+        val = item.get("companyName") or item.get("company")
+        if isinstance(val, dict):
+            return val.get("name")
+        if isinstance(val, str):
+            # dash: URN -> resolve to a Company object in `included`
+            ref = by_urn.get(val) or {}
+            return ref.get("name") or None
+        return None
+
     profile_obj: dict = {}
     picture_url: str | None = None
     experiences, educations, skills, certifications, languages = [], [], [], [], []
@@ -362,10 +389,15 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
             picture_url = picture_url or _extract_picture(item)
 
         elif type_str.endswith("profile.Position"):
-            company = item.get("companyName") or (item.get("company") or {}).get("name")
+            title = item.get("title")
+            company = _resolve_company(item)
+            # Skip bare stub positions (e.g. the top-card query's reference-only
+            # Position) that carry no title and no company.
+            if not title and not company:
+                continue
             start, end = _time_period(item)
             experiences.append(ExperienceItem(
-                title=item.get("title"),
+                title=title,
                 company_name=company,
                 location=item.get("locationName"),
                 start_date=start,
@@ -374,10 +406,15 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
             ))
 
         elif type_str.endswith("profile.Education"):
+            institution = item.get("schoolName")
+            degree = item.get("degreeName")
+            field = item.get("fieldOfStudy")
+            if not institution and not degree and not field:
+                continue
             educations.append(EducationItem(
-                institution=item.get("schoolName"),
-                degree=item.get("degreeName"),
-                field_of_study=item.get("fieldOfStudy"),
+                institution=institution,
+                degree=degree,
+                field_of_study=field,
                 start_year=_year(item, "startDate"),
                 end_year=_year(item, "endDate"),
             ))
@@ -399,10 +436,16 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     full_name = f"{first_name or ''} {last_name or ''}".strip() or handle
     picture_url = picture_url or _extract_picture(profile_obj)
 
+    geo = profile_obj.get("geoLocation")
+    if isinstance(geo, str):  # dash: URN reference
+        geo = by_urn.get(geo) or {}
+    geo = geo if isinstance(geo, dict) else {}
+    geo_inner = geo.get("geo") if isinstance(geo.get("geo"), dict) else {}
     raw_loc = (
         profile_obj.get("locationName")
         or profile_obj.get("geoLocationName")
-        or (profile_obj.get("geoLocation") or {}).get("geo", {}).get("defaultLocalizedName")
+        or geo_inner.get("defaultLocalizedName")
+        or geo.get("defaultLocalizedName")
     )
 
     return ProfileResponse(
@@ -530,16 +573,90 @@ async def probe_graphql(handle: str, query_id: str, var: str = "vanityName", fol
 
     included = data.get("included", []) or []
     types = sorted({e.get("$type", "") for e in included})
-    parsed = parse_voyager_json("probe", handle, data)
+    result["included_count"] = len(included)
+    result["distinct_types_sample"] = types[:25]
+    result["data_keys"] = list(data.keys())
+
+    try:
+        parsed = parse_voyager_json("probe", handle, data)
+    except Exception as exc:
+        # Surface parser failures instead of a bare 500, and include a small sample
+        # of the raw graph so we can see the real response shape to fix the mapping.
+        logger.exception("parse_voyager_json failed in probe")
+        result["parse_error"] = f"{type(exc).__name__}: {exc}"
+        result["included_sample"] = included[:3]
+        result["usable"] = False
+        return result
+
     result.update({
-        "included_count": len(included),
-        "distinct_types_sample": types[:25],
         "parsed_name": parsed.full_name,
         "parsed_headline": parsed.headline,
         "experience_count": len(parsed.experience),
         # Usable if the query returned a graph AND we resolved a name beyond the handle.
         "usable": bool(included) and parsed.full_name != handle,
     })
+    return result
+
+
+DUMP_PATH = Path(__file__).resolve().parent.parent / "debug_dump.json"
+
+
+async def debug_raw_graphql(query_id: str, variables: str) -> dict:
+    """
+    Diagnostic: run ANY GraphQL query (arbitrary queryId + raw variables string,
+    e.g. "(profileUrn:urn:li:fsd_profile:XXXX)") and write the full JSON response
+    to debug_dump.json for offline inspection. Returns a small summary.
+
+    Used to capture the profile-cards/components response so its component-tree
+    shape can be mapped without pasting a huge payload.
+    """
+    url = f"{VOYAGER_BASE}/graphql?includeWebMetadata=true&variables={variables}&queryId={query_id}"
+    async with make_voyager_client() as client:
+        resp = await voyager_get(client, url)
+
+    result = {"status_code": resp.status_code, "url": url}
+    if resp.status_code != 200:
+        result["body_preview"] = resp.text[:400]
+        return result
+
+    try:
+        data = resp.json()
+    except Exception:
+        result["body_preview"] = resp.text[:400]
+        return result
+
+    included = [x for x in (data.get("included") or []) if isinstance(x, dict)]
+    DUMP_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {
+        "status_code": 200,
+        "included_count": len(included),
+        "distinct_types": sorted({x.get("$type", "") for x in included}),
+        "data_keys": list(data.keys()),
+        "wrote_to": str(DUMP_PATH),
+    }
+
+
+async def debug_components(member_id: str, section: str, query_id: str) -> dict:
+    """
+    Diagnostic for ProfileComponents: builds the variables string server-side from
+    a URL-safe member id (the `ACoAA...` part of a profile URN), so no parentheses
+    or colons need to survive a browser URL bar. Dumps the full response to file.
+    """
+    profile_urn = f"urn:li:fsd_profile:{member_id}"
+    variables = f"(profileUrn:{profile_urn},sectionType:{section})"
+    result = await debug_raw_graphql(query_id, variables)
+    result["variables_used"] = variables
+    return result
+
+
+async def debug_cards(member_id: str, query_id: str) -> dict:
+    """
+    Diagnostic for ProfileCards (or any query taking just profileUrn). Builds the
+    variables server-side from a URL-safe member id and dumps the full response.
+    """
+    variables = f"(profileUrn:urn:li:fsd_profile:{member_id})"
+    result = await debug_raw_graphql(query_id, variables)
+    result["variables_used"] = variables
     return result
 
 
