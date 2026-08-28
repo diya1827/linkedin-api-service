@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkedIn Profile Parser</title>
+  <style>
+    :root {
+      --li-blue: #0a66c2;
+      --li-blue-dark: #004182;
+      --bg: #f3f2ef;
+      --card: #ffffff;
+      --text: #1d2226;
+      --muted: #56687a;
+      --border: #e0dfdc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: var(--li-blue);
+      color: #fff;
+      padding: 18px 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    header h1 { font-size: 20px; margin: 0; font-weight: 600; }
+    .wrap { max-width: 780px; margin: 0 auto; padding: 24px 16px 64px; }
+    .search {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    .search label { font-weight: 600; font-size: 14px; display: block; margin-bottom: 8px; }
+    .row { display: flex; gap: 10px; }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 15px;
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: var(--li-blue); box-shadow: 0 0 0 2px rgba(10,102,194,.15); }
+    button {
+      background: var(--li-blue);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 22px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    button:hover { background: var(--li-blue-dark); }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .hint { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+
+    .status { margin-top: 20px; text-align: center; color: var(--muted); }
+    .error {
+      margin-top: 20px;
+      background: #fdf1f1;
+      border: 1px solid #f5c2c2;
+      color: #922;
+      padding: 14px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .spinner {
+      width: 22px; height: 22px; border: 3px solid #ccd; border-top-color: var(--li-blue);
+      border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-top: 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      overflow: hidden;
+    }
+    .profile-head { display: flex; gap: 18px; padding: 22px; align-items: center; }
+    .avatar {
+      width: 96px; height: 96px; border-radius: 50%; object-fit: cover;
+      border: 2px solid var(--border); background: #eef3f8; flex-shrink: 0;
+    }
+    .avatar-fallback {
+      width: 96px; height: 96px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--li-blue); color: #fff; font-size: 34px; font-weight: 600;
+    }
+    .name { font-size: 22px; font-weight: 700; margin: 0; }
+    .headline { color: var(--text); margin: 4px 0; }
+    .loc { color: var(--muted); font-size: 14px; }
+    .section { padding: 18px 22px; border-top: 1px solid var(--border); }
+    .section h3 { margin: 0 0 12px; font-size: 16px; }
+    .item { margin-bottom: 14px; }
+    .item:last-child { margin-bottom: 0; }
+    .item .t { font-weight: 600; }
+    .item .s { color: var(--muted); font-size: 13.5px; }
+    .item .d { font-size: 14px; margin-top: 4px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      background: #eaf1f8; color: var(--li-blue-dark);
+      border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: 500;
+    }
+    .empty { color: var(--muted); font-style: italic; font-size: 14px; }
+    a.raw { color: var(--li-blue); font-size: 13px; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="#fff"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.55V9h3.57v11.45zM22.22 0H1.77C.8 0 0 .78 0 1.75v20.5C0 23.22.8 24 1.77 24h20.45c.98 0 1.78-.78 1.78-1.75V1.75C24 .78 23.2 0 22.22 0z"/></svg>
+    <h1>LinkedIn Profile Parser</h1>
+  </header>
+
+  <div class="wrap">
+    <div class="search">
+      <label for="url">LinkedIn profile URL</label>
+      <div class="row">
+        <input id="url" type="text" placeholder="https://www.linkedin.com/in/username/"
+               value="https://www.linkedin.com/in/diya-singh-478988269/" />
+        <button id="go">Parse</button>
+      </div>
+      <div class="hint">Paste any public LinkedIn profile URL and press Parse.</div>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const out = $("out");
+    const btn = $("go");
+    const input = $("url");
+
+    const esc = (s) => (s == null ? "" : String(s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])));
+
+    function initials(name) {
+      const p = (name || "").trim().split(/\s+/);
+      return ((p[0]?.[0] || "") + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase() || "?";
+    }
+
+    function dateRange(a, b) {
+      if (!a && !b) return "";
+      return [a || "", b || ""].filter(Boolean).join(" – ");
+    }
+
+    function section(title, inner) {
+      return `<div class="section"><h3>${esc(title)}</h3>${inner}</div>`;
+    }
+
+    function render(p) {
+      const avatar = p.profile_image_url
+        ? `<img class="avatar" src="${esc(p.profile_image_url)}" alt="" onerror="this.outerHTML='<div class=\\'avatar-fallback\\'>${initials(p.full_name)}</div>'" />`
+        : `<div class="avatar-fallback">${initials(p.full_name)}</div>`;
+
+      const loc = p.location?.raw_location || [p.location?.city, p.location?.country].filter(Boolean).join(", ");
+
+      let html = `<div class="card">
+        <div class="profile-head">
+          ${avatar}
+          <div>
+            <p class="name">${esc(p.full_name)}</p>
+            ${p.headline ? `<p class="headline">${esc(p.headline)}</p>` : ""}
+            ${loc ? `<div class="loc">📍 ${esc(loc)}</div>` : ""}
+          </div>
+        </div>`;
+
+      if (p.about) html += section("About", `<div>${esc(p.about).replace(/\n/g, "<br>")}</div>`);
+
+      // Experience
+      html += section("Experience", (p.experience && p.experience.length)
+        ? p.experience.map(e => `<div class="item">
+            <div class="t">${esc(e.title) || "—"}</div>
+            <div class="s">${[esc(e.company_name), esc(e.location)].filter(Boolean).join(" · ")}
+              ${dateRange(e.start_date, e.end_date) ? " · " + esc(dateRange(e.start_date, e.end_date)) : ""}</div>
+            ${e.description ? `<div class="d">${esc(e.description).replace(/\n/g, "<br>")}</div>` : ""}
+          </div>`).join("")
+        : `<div class="empty">Not available</div>`);
+
+      // Education
+      html += section("Education", (p.education && p.education.length)
+        ? p.education.map(e => `<div class="item">
+            <div class="t">${esc(e.institution) || "—"}</div>
+            <div class="s">${[esc(e.degree), esc(e.field_of_study)].filter(Boolean).join(", ")}
+              ${dateRange(e.start_year, e.end_year) ? " · " + esc(dateRange(e.start_year, e.end_year)) : ""}</div>
+          </div>`).join("")
+        : `<div class="empty">Not available</div>`);
+
+      // Skills / Certs / Languages as chips
+      const chips = (arr) => (arr && arr.length)
+        ? `<div class="chips">${arr.map(s => `<span class="chip">${esc(s)}</span>`).join("")}</div>`
+        : `<div class="empty">Not available</div>`;
+
+      html += section("Skills", chips(p.skills));
+      html += section("Certifications", chips(p.certifications));
+      html += section("Languages", chips(p.languages));
+
+      html += `<div class="section"><a class="raw" href="${esc(p.profile_url)}" target="_blank" rel="noopener">Open original profile ↗</a></div>`;
+      html += `</div>`;
+      out.innerHTML = html;
+    }
+
+    async function parse() {
+      const url = input.value.trim();
+      if (!url) { out.innerHTML = `<div class="error">Please enter a LinkedIn profile URL.</div>`; return; }
+      btn.disabled = true;
+      out.innerHTML = `<div class="status"><span class="spinner"></span> Fetching profile…</div>`;
+      try {
+        const res = await fetch("/api/v1/parse-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_url: url }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail, null, 2);
+          out.innerHTML = `<div class="error"><strong>Error ${res.status}</strong>\n${esc(detail)}</div>`;
+          return;
+        }
+        render(data);
+      } catch (err) {
+        out.innerHTML = `<div class="error">Request failed: ${esc(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    btn.addEventListener("click", parse);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") parse(); });
+  </script>
+</body>
+</html>
