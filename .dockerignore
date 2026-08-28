@@ -1,0 +1,26 @@
+# Secrets — never bake into an image
+.env
+
+# Python virtual envs & caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git & project meta
+.git/
+.gitignore
+.dockerignore
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs (not needed at runtime)
+README.md
