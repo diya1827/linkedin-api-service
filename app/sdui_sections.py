@@ -131,7 +131,7 @@ def extract_component_requests(html_text: str) -> dict[str, dict]:
 
 
 _PRONOUNS_RE = re.compile(r"^[A-Z][a-z]+/[A-Z][a-z]+$")
-_CONNECTIONS_RE = re.compile(r"^(\d[\d,]*\+?)$")
+_CONNECTIONS_RE = re.compile(r"^(\d[\d,.]*[KMB]?\+?)$")
 
 
 def extract_top_card(html_text: str) -> dict:
@@ -141,7 +141,7 @@ def extract_top_card(html_text: str) -> dict:
     "Contact info", ..., "500+", "connections". Returns whatever of
     {location, pronouns, connections} is present.
     """
-    out: dict = {"location": None, "pronouns": None, "connections": None}
+    out: dict = {"location": None, "pronouns": None, "connections": None, "followers": None}
     m = _REHYDRATION_RE.search(html_text)
     if not m:
         return out

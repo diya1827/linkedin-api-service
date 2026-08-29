@@ -58,6 +58,7 @@ class ProfileResponse(BaseModel):
     volunteering: List[ExperienceItem] = []  # title=role, company_name=organisation
     pronouns: Optional[str] = None
     connections: Optional[str] = None  # LinkedIn shows "500+" past 500
+    followers: Optional[str] = None    # as displayed on the top card, e.g. "1M"
     # Any other section the profile carries (honors_and_awards, projects,
     # publications, courses, ...) as {section: [{title, details[]}]}.
     additional_sections: Dict[str, List[dict]] = {}

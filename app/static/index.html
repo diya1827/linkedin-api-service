@@ -177,6 +177,8 @@
             <p class="name">${esc(p.full_name)}</p>
             ${p.headline ? `<p class="headline">${esc(p.headline)}</p>` : ""}
             ${loc ? `<div class="loc">📍 ${esc(loc)}</div>` : ""}
+            ${[p.pronouns, p.connections ? p.connections + " connections" : null, p.followers ? p.followers + " followers" : (p.follower_count ? p.follower_count.toLocaleString() + " followers" : null)].filter(Boolean).length
+              ? `<div class="loc">${[p.pronouns, p.connections ? p.connections + " connections" : null, p.followers ? p.followers + " followers" : (p.follower_count ? p.follower_count.toLocaleString() + " followers" : null)].filter(Boolean).map(esc).join(" · ")}</div>` : ""}
           </div>
         </div>`;
 
@@ -211,6 +213,16 @@
       html += section("Certifications", chips(p.certifications));
       html += section("Languages", chips(p.languages));
       if (p.volunteering && p.volunteering.length) html += section("Volunteering", roles(p.volunteering));
+
+      // Anything else the profile carries (honors, projects, publications, ...)
+      const extra = p.additional_sections || {};
+      for (const key of Object.keys(extra)) {
+        const label = key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        html += section(label, extra[key].map(e => `<div class="item">
+            <div class="t">${esc(e.title) || "—"}</div>
+            ${(e.details || []).length ? `<div class="s">${e.details.map(esc).join(" · ")}</div>` : ""}
+          </div>`).join(""));
+      }
 
       html += `<div class="section"><a class="raw" href="${esc(p.profile_url)}" target="_blank" rel="noopener">Open original profile ↗</a></div>`;
       html += `</div>`;

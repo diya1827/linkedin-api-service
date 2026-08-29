@@ -705,6 +705,7 @@ async def fetch_linkedin_profile_voyager(profile_url: str, include_sections: boo
             profile.location = Location(raw_location=top["location"])
         profile.pronouns = top.get("pronouns")
         profile.connections = top.get("connections")
+        profile.followers = top.get("followers")
     profile.meta = ResponseMeta(
         fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         elapsed_ms=int((time.monotonic() - started) * 1000),
