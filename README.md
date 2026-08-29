@@ -14,6 +14,7 @@ linkedin-api-service/
 │   ├── main.py              # FastAPI app + routes (UI, parse, health, debug)
 │   ├── schemas.py           # Pydantic request/response models
 │   ├── linkedin_service.py  # Voyager fetch + raw payload -> Profile mapping
+│   ├── sdui_sections.py     # Experience/Education/Skills/... via the SDUI card endpoint
 │   ├── config.py            # env-based settings
 │   └── static/index.html    # single-page frontend (calls the parse endpoint)
 ├── tests/                   # pytest, no network (MockTransport)
@@ -51,6 +52,18 @@ Voyager directly:
    the classic (`...voyager.identity.profile.*`) and current dash
    (`...voyager.dash.identity.profile.*`) schemas, resolving dash's URN references
    (e.g. a position's company URN) against `included[]`.
+4. **Sections** (`include_sections`, default `true`). The GraphQL card only
+   carries the intro; LinkedIn moved Experience / Education / Skills /
+   Certifications / Languages to **SDUI** (server-driven UI). The profile
+   document ships every section as an *empty placeholder* plus, in its hydration
+   blob, the exact `AsyncComponentRequest` the browser would POST to
+   `/flagship-web/rsc-action/actions/component` to fill it. `app/sdui_sections.py`
+   lifts those requests out of the HTML and replays them with `httpx` (one POST per
+   card, ~8 per profile, 0.4 s apart), then parses the returned React-Server-
+   Components flight payload: visible text is walked in render order and split
+   into entries by the card's collection items. No JavaScript, no scrolling, no
+   browser engine. Section fetches are best-effort: any failure logs and yields
+   empty lists rather than failing the request.
 
 ### Getting the `queryId` (one-time, ~30s)
 
@@ -130,8 +143,9 @@ Use `linkedin_session` to tell at a glance whether the backing cookies still wor
   "about": "…",
   "profile_image_url": "https://media.licdn.com/…",
   "experience": [
-    { "title": "Engineer", "company_name": "Acme", "location": "Delhi",
-      "start_date": "2022-01", "end_date": "Present", "description": null }
+    { "title": "Engineer", "company_name": "Acme", "location": "Delhi, India",
+      "start_date": "Jan 2022", "end_date": "Present", "description": "…",
+      "employment_type": "Full-time" }
   ],
   "education": [
     { "institution": "IIT", "degree": "BTech", "field_of_study": "CS",
@@ -191,15 +205,18 @@ and restricting — the backing LinkedIn account from a public endpoint.
 - **Cookie expiry & rate limiting.** `li_at`/`JSESSIONID` expire, and LinkedIn
   rate-limits/soft-blocks automated traffic (HTTP `429`/`999`), especially from
   datacenter IPs. Refresh cookies as needed; keep request volume modest.
-- **Profile *sections* (experience, education, skills, certs, languages) are
-  limited.** LinkedIn migrated the profile detail sections to **SDUI** (Server-
-  Driven UI / React Server Components, served from `flagship-web/rsc-action`),
-  which returns a serialized *component tree* rather than queryable entities. The
-  clean Voyager GraphQL path reliably returns the **intro card** — name, headline,
-  location, about, profile image, current role. The full section lists require
-  parsing the SDUI render tree (fragile, view-coupled) and are out of scope here.
-  The parser already handles `Position`/`Education`/`Skill` entities, so if a
-  future query returns them as data, they populate automatically.
+- **Sections come from a rendered component tree, not entities.** The SDUI
+  card payload is a React render tree, so `sdui_sections.py` classifies visible
+  lines by shape (date ranges, `Company · Employment type`, location, grouped
+  multi-role companies, `Issued <date>`). It is verified against real profiles
+  but is view-coupled: a LinkedIn layout change can degrade a field (it never
+  breaks the intro card). Skills return what the profile card shows (the top
+  entries); the full list lives on `/details/skills/` and is not fetched.
+- **Fingerprint consistency matters.** The User-Agent, `sec-ch-ua*` hints and
+  `x-li-track` all describe the same browser the cookies were minted in. LinkedIn
+  treats a cookie used from a "different" browser as session hijacking and revokes
+  it globally; keep those headers in `linkedin_service.py` matched to the browser
+  you copied the cookies from.
 - **Visibility scope.** Only data visible to the logged-in account is returned;
   some fields depend on connection degree and the profile's privacy settings.
 - **Terms of Service.** Automated access to LinkedIn may violate its ToS. This

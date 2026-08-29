@@ -5,3 +5,21 @@ __pycache__/
 .env
 .pytest_cache/
 debug_dump.json
+
+capture.har
+*.har
+debug_dump.json
+
+# local reverse-engineering scratch (never commit: carries live session data)
+p.html
+detail_*.html
+bundles/
+async_requests.json
+card_*.txt
+card_body.json
+exp_*.txt
+exp_body*.json
+rsc_*.py
+.DS_Store
+live.json
+server.log

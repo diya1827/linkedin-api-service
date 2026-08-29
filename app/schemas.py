@@ -13,6 +13,7 @@ class ExperienceItem(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = "Present"
     description: Optional[str] = None
+    employment_type: Optional[str] = None
 
 class EducationItem(BaseModel):
     institution: Optional[str] = None
@@ -23,6 +24,10 @@ class EducationItem(BaseModel):
 
 class ProfileRequest(BaseModel):
     profile_url: HttpUrl
+    # Sections (experience/education/skills/...) cost ~8 extra LinkedIn calls per
+    # profile. On by default because they are the point of the service; set
+    # false for the cheap intro-card-only path.
+    include_sections: bool = True
 
 class ProfileResponse(BaseModel):
     profile_url: str

@@ -55,15 +55,16 @@ def _api_headers(csrf_token: str) -> dict:
     """
     return {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
         ),
         "Accept": "application/vnd.linkedin.normalized+json+2.0",
         "Accept-Language": "en-US,en;q=0.9",
         "x-li-lang": "en_US",
         "x-li-track": (
-            '{"clientVersion":"1.13.0","osName":"web","timezoneOffset":0,'
-            '"deviceFormFactor":"DESKTOP","mpName":"voyager-web"}'
+            '{"clientVersion":"1.13.46312","mpVersion":"1.13.46312","osName":"web",'
+            '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
+            '"mpName":"voyager-web","displayDensity":2,"displayWidth":2940,"displayHeight":1912}'
         ),
         "x-li-page-instance": "urn:li:page:d_flagship3_profile_view_base;dummy",
         "x-restli-protocol-version": "2.0.0",
@@ -160,17 +161,19 @@ def build_html_headers() -> dict:
     li_at, csrf_token = _load_credentials()
     return {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
         ),
         "Accept": (
             "text/html,application/xhtml+xml,application/xml;q=0.9,"
             "image/avif,image/webp,image/apng,*/*;q=0.8"
         ),
         "Accept-Language": "en-US,en;q=0.9",
-        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        # Client hints MUST agree with the User-Agent above (Chrome 151 on macOS).
+        # A mismatched fingerprint reads as session hijacking and gets li_at revoked.
+        "sec-ch-ua": '"Google Chrome";v="151", "Chromium";v="151", "Not.A/Brand";v="24"',
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-platform": '"macOS"',
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "none",
@@ -539,11 +542,54 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     )
 
 
-async def fetch_linkedin_profile_voyager(profile_url: str) -> ProfileResponse:
-    """Top-level entry: URL -> fetched payload -> parsed ProfileResponse."""
+async def fetch_profile_sections(handle: str, html_text: str | None = None) -> dict:
+    """
+    Experience / Education / Skills / Certifications / Languages via the SDUI
+    lazy-card endpoint (see app/sdui_sections.py). Best-effort: returns empty
+    lists on any failure so the intro card is never lost because of a section.
+    """
+    from app import sdui_sections
+
+    try:
+        if html_text is None:
+            html_resp = await _fetch_profile_html(handle)
+            if html_resp.status_code != 200:
+                logger.warning("Sections: profile HTML fetch -> %s", html_resp.status_code)
+                return sdui_sections.cards_to_sections({})
+            html_text = html_resp.text
+        li_at, csrf_token = _load_credentials()
+        api = _api_headers(csrf_token)
+        cards = await sdui_sections.fetch_section_cards(
+            handle,
+            html_text,
+            cookie_header=f'li_at={li_at}; JSESSIONID="{csrf_token}"',
+            csrf_token=csrf_token,
+            user_agent=api["User-Agent"],
+            li_track=api["x-li-track"],
+            proxy=_proxy(),
+        )
+        return sdui_sections.cards_to_sections(cards)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Sections fetch failed, returning empty sections: %s", exc)
+        return sdui_sections.cards_to_sections({})
+
+
+async def fetch_linkedin_profile_voyager(profile_url: str, include_sections: bool = True) -> ProfileResponse:
+    """Top-level entry: URL -> fetched payload -> parsed ProfileResponse, then
+    (optionally) the lazily-loaded sections merged on top. The graphql intro
+    card only ever yields the top card, so sections come from the SDUI path;
+    anything the card path already found is kept when the SDUI path is empty."""
     handle = extract_handle_from_url(profile_url)
     data = await fetch_profile_payload(handle)
-    return parse_voyager_json(profile_url, handle, data)
+    profile = parse_voyager_json(profile_url, handle, data)
+    if include_sections:
+        sections = await fetch_profile_sections(handle)
+        for field, values in sections.items():
+            if values:
+                setattr(profile, field, values)
+    return profile
 
 
 # --------------------------------------------------------------------------- #
