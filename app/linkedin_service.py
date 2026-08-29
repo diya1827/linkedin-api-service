@@ -674,7 +674,7 @@ async def fetch_profile_sections(handle: str, html_text: str | None = None) -> d
                           "sec-ch-ua-platform": b["sec_ch_ua_platform"]},
         )
         sections = sdui_sections.cards_to_sections(cards)
-        sections["location"] = sdui_sections.extract_top_card_location(html_text)
+        sections["_top"] = sdui_sections.extract_top_card(html_text)
         sections["_cards"] = sorted(cards)
         return sections
     except HTTPException:
@@ -696,13 +696,15 @@ async def fetch_linkedin_profile_voyager(profile_url: str, include_sections: boo
     cards: list[str] = []
     if include_sections:
         sections = await fetch_profile_sections(handle)
-        top_location = sections.pop("location", None)
+        top = sections.pop("_top", {}) or {}
         cards = sections.pop("_cards", [])
         for field, values in sections.items():
             if values:
                 setattr(profile, field, values)
-        if profile.location is None and top_location:
-            profile.location = Location(raw_location=top_location)
+        if profile.location is None and top.get("location"):
+            profile.location = Location(raw_location=top["location"])
+        profile.pronouns = top.get("pronouns")
+        profile.connections = top.get("connections")
     profile.meta = ResponseMeta(
         fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         elapsed_ms=int((time.monotonic() - started) * 1000),

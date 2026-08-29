@@ -160,6 +160,10 @@ separately. Interactive docs: `GET /docs` (OpenAPI).
   "volunteering": [ { "title": "Fellow", "company_name": "Some Org", "start_date": "Aug 2025", "end_date": "Jan 2026" } ],
   "certifications": ["AWS"],
   "languages": ["English"],
+  "pronouns": "She/Her",
+  "connections": "500+",
+  "follower_count": 1234,
+  "additional_sections": { "honors_and_awards": [ { "title": "Best Paper", "details": ["IEEE · Issued 2024"] } ] },
   "meta": { "fetched_at": "2026-08-30T10:00:00+00:00", "elapsed_ms": 3200, "cached": false,
             "sections_requested": true, "section_cards_fetched": ["profileCardsExperienceOnly", "..."] }
 }

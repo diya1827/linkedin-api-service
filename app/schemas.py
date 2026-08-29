@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, HttpUrl
 
 class Location(BaseModel):
@@ -56,4 +56,9 @@ class ProfileResponse(BaseModel):
     certifications: List[str] = []
     languages: List[str] = []
     volunteering: List[ExperienceItem] = []  # title=role, company_name=organisation
+    pronouns: Optional[str] = None
+    connections: Optional[str] = None  # LinkedIn shows "500+" past 500
+    # Any other section the profile carries (honors_and_awards, projects,
+    # publications, courses, ...) as {section: [{title, details[]}]}.
+    additional_sections: Dict[str, List[dict]] = {}
     meta: Optional[ResponseMeta] = None

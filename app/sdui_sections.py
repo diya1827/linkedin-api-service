@@ -130,31 +130,45 @@ def extract_component_requests(html_text: str) -> dict[str, dict]:
     return found
 
 
-def extract_top_card_location(html_text: str) -> str | None:
+_PRONOUNS_RE = re.compile(r"^[A-Z][a-z]+/[A-Z][a-z]+$")
+_CONNECTIONS_RE = re.compile(r"^(\d[\d,]*\+?)$")
+
+
+def extract_top_card(html_text: str) -> dict:
     """
     The intro card is the one region LinkedIn server-renders. Its visible text
     runs: name, headline, [pronouns], "Company · School", LOCATION, "·",
-    "Contact info". Return that location line, or None.
+    "Contact info", ..., "500+", "connections". Returns whatever of
+    {location, pronouns, connections} is present.
     """
+    out: dict = {"location": None, "pronouns": None, "connections": None}
     m = _REHYDRATION_RE.search(html_text)
     if not m:
-        return None
+        return out
     try:
         chunks = json.loads(m.group(1))
     except ValueError:
-        return None
+        return out
     rows = parse_flight("".join(c for c in chunks if isinstance(c, str)))
     ev: list = []
     for key in sorted(rows, key=lambda k: int(k, 16)):
         _walk(rows[key], rows, ev)
     texts = [e[1] for e in ev if e[0] == "text"]
     for i, t in enumerate(texts):
-        if t == "Contact info":
+        if t == "Contact info" and out["location"] is None:
             for prev in reversed(texts[max(0, i - 3):i]):
                 if prev != "·" and 2 <= len(prev) <= 80:
-                    return prev
-            return None
-    return None
+                    out["location"] = prev
+                    break
+        elif t in ("connections", "followers") and i > 0 and _CONNECTIONS_RE.match(texts[i - 1]):
+            out[t] = texts[i - 1]
+        elif _PRONOUNS_RE.match(t) and out["pronouns"] is None and i < 12:
+            out["pronouns"] = t
+    return out
+
+
+def extract_top_card_location(html_text: str) -> str | None:
+    return extract_top_card(html_text)["location"]
 
 
 def extract_page_instance(html_text: str) -> str:
@@ -521,11 +535,14 @@ _HEADING_TO_FIELD = {
 }
 
 
+_IGNORED_HEADINGS = {"Interests", "Activity", "Featured"}
+
+
 def cards_to_sections(cards: dict[str, str]) -> dict[str, Any]:
     """Merge every fetched card into the ProfileResponse section fields."""
     result: dict[str, Any] = {
         "experience": [], "education": [], "skills": [], "certifications": [], "languages": [],
-        "volunteering": [], "about": None,
+        "volunteering": [], "about": None, "additional_sections": {},
     }
     for card, flight in cards.items():
         try:
@@ -535,7 +552,20 @@ def cards_to_sections(cards: dict[str, str]) -> dict[str, Any]:
             continue
         for heading, items in sections.items():
             field = _HEADING_TO_FIELD.get(heading)
-            if not field or not items:
+            if not items:
+                continue
+            if not field:
+                # Honors, Projects, Publications, Courses, ...: keep them rather
+                # than drop them. Interests are recommendations, not profile data.
+                if heading in _IGNORED_HEADINGS:
+                    continue
+                name = re.sub(r"(?<!^)(?=[A-Z])", "_", heading).lower()
+                entries = [
+                    {"title": ls[0], "details": ls[1:]}
+                    for ls in (_clean_lines(it) for it in items) if ls
+                ]
+                if entries:
+                    result["additional_sections"].setdefault(name, []).extend(entries)
                 continue
             if field == "about":
                 text = " ".join(ln for item in items for ln in _clean_lines(item)).strip()

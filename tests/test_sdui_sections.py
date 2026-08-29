@@ -102,7 +102,7 @@ def test_parse_education_certs_skills_languages():
 
 def test_malformed_card_yields_empty_sections_not_error():
     res = S.cards_to_sections({"profileCardsBelowActivityPart2": "garbage", "x": "0:[1,2"})
-    assert res == {"experience": [], "education": [], "skills": [], "certifications": [], "languages": [], "volunteering": [], "about": None}
+    assert res == {"experience": [], "education": [], "skills": [], "certifications": [], "languages": [], "volunteering": [], "about": None, "additional_sections": {}}
 
 
 REHYDRATION_HTML = (
@@ -142,6 +142,27 @@ def test_about_card_and_top_card_location():
     ]) + ';</script>')
     assert S.extract_top_card_location(html) == "Delhi, India"
     assert S.extract_top_card_location("<html></html>") is None
+    html2 = ('<script>window.__como_rehydration__ = ' + json.dumps([
+        '0:' + json.dumps(["$", "div", None, {"children": [_p("Jane Doe"), _p("Engineer"), _p("She/Her"), _p("Acme · MIT"),
+                                                          _p("Delhi, India"), _p("·"), _p("Contact info"), _p("500+"), _p("connections")]}])
+    ]) + ';</script>')
+    top = S.extract_top_card(html2)
+    assert (top["location"], top["pronouns"], top["connections"]) == ("Delhi, India", "She/Her", "500+")
+
+
+def test_unmapped_sections_are_kept_and_interests_dropped():
+    flight = _flight({"0": ["$", "div", None, {
+        "data-sdui-component": "com.linkedin.sdui.generated.profile.dsl.impl.profileCardsBelowActivityPart3",
+        "children": [
+            _card("x", "HonorsAndAwards", [_item("Best Paper", "IEEE · Issued 2024")]),
+            _card("x", "Projects", [_item("Widget", "Jan 2024 - Mar 2024", "Built a widget.")]),
+            _card("x", "Interests", [_item("Some Company")]),
+        ]}]})
+    extra = S.cards_to_sections({"profileCardsBelowActivityPart3": flight})["additional_sections"]
+    assert extra == {
+        "honors_and_awards": [{"title": "Best Paper", "details": ["IEEE · Issued 2024"]}],
+        "projects": [{"title": "Widget", "details": ["Jan 2024 - Mar 2024", "Built a widget."]}],
+    }
 
 
 def test_extract_on_non_sdui_page_is_empty():
