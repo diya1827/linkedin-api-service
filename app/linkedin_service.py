@@ -3,7 +3,7 @@ import json
 import html as html_lib
 import logging
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import httpx
 from fastapi import HTTPException
@@ -98,14 +98,23 @@ def _seed_jar() -> httpx.Cookies:
     return jar
 
 
+def _proxy() -> str | None:
+    """Optional outbound proxy for all LinkedIn requests (empty -> direct)."""
+    return clean_token(settings.LINKEDIN_PROXY) or None
+
+
 def make_voyager_client(follow: bool = False) -> httpx.AsyncClient:
     """
     Build an httpx client with a cookie jar seeded from credentials. Using the jar
     (instead of a manual Cookie header) lets LinkedIn rotate JSESSIONID via
-    Set-Cookie on redirects and keeps subsequent requests consistent.
+    Set-Cookie on redirects and keeps subsequent requests consistent. Routed through
+    LINKEDIN_PROXY when configured.
     """
     return httpx.AsyncClient(
-        timeout=settings.REQUEST_TIMEOUT, follow_redirects=follow, cookies=_seed_jar()
+        timeout=settings.REQUEST_TIMEOUT,
+        follow_redirects=follow,
+        cookies=_seed_jar(),
+        proxy=_proxy(),
     )
 
 
@@ -126,7 +135,9 @@ async def voyager_get(client: httpx.AsyncClient, url: str, max_redirects: int = 
         resp = await client.get(url, headers=_api_headers(_current_csrf(client)))
         location = resp.headers.get("location")
         if resp.status_code in (301, 302, 303, 307, 308) and location:
-            url = location  # jar already absorbed any Set-Cookie from this response
+            # Location may be relative (e.g. "/uas/login?redirect=1"); resolve it
+            # against the current URL so client.get doesn't choke on a bare path.
+            url = urljoin(str(resp.url), location)
             continue
         break
     return resp
@@ -176,15 +187,61 @@ async def _get(client: httpx.AsyncClient, url: str, headers: dict | None = None)
     return await client.get(url, headers=headers or build_voyager_headers())
 
 
+_PROFILE_TYPE_TAILS = (".Profile", ".MiniProfile", "profile.Position", "profile.Education")
+
+
+def _json_or_none(resp: httpx.Response) -> dict | None:
+    """
+    Return parsed JSON only if the response actually IS JSON. A 200 can carry an
+    HTML challenge/login page (bot mitigation), which would make resp.json() raise
+    and surface as a confusing 500. Guard on content-type + a real parse.
+    """
+    ctype = resp.headers.get("content-type", "")
+    if "json" not in ctype.lower():
+        return None
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _usable(payload: dict | None) -> bool:
+    """
+    True only if the payload carries a real profile entity. A soft block / stale
+    queryId / non-visible profile returns 200 with an empty `included`, which must
+    NOT be treated as success (it would yield a hollow profile whose name is just
+    the handle).
+    """
+    if not payload:
+        return False
+    for item in payload.get("included", []) or []:
+        if isinstance(item, dict) and item.get("$type", "").endswith(_PROFILE_TYPE_TAILS):
+            return True
+    return False
+
+
+async def _fetch_profile_html(handle: str) -> httpx.Response:
+    """Strategy 3 network call, factored out so it can be mocked in tests. Uses a
+    browser-navigation header set (not the JSON-API headers) to dodge the 999 block."""
+    async with httpx.AsyncClient(
+        timeout=settings.REQUEST_TIMEOUT, follow_redirects=True, proxy=_proxy()
+    ) as html_client:
+        return await html_client.get(
+            f"https://www.linkedin.com/in/{quote(handle)}/", headers=build_html_headers()
+        )
+
+
 async def fetch_profile_payload(handle: str) -> dict:
     """
     Fetch the raw normalized JSON for a profile, trying strategies in order:
 
       1. GraphQL identity query   (requires LINKEDIN_PROFILE_QUERY_ID)
-      2. Embedded HTML JSON       (GET the profile page, extract Voyager blocks)
-      3. Legacy profileView REST  (deprecated; best-effort)
+      2. Legacy profileView REST  (deprecated; best-effort)
+      3. Embedded HTML JSON       (GET the profile page, extract Voyager blocks)
 
-    All three yield the same normalized envelope ({"data": ..., "included": [...]}),
+    Each API strategy only "succeeds" on a 200 whose payload is _usable() — an
+    empty/soft-blocked 200 falls through instead of returning a hollow profile.
+    All strategies yield the same normalized envelope ({"data", "included"}),
     which parse_voyager_json() understands.
     """
     query_id = clean_token(settings.LINKEDIN_PROFILE_QUERY_ID)
@@ -202,31 +259,30 @@ async def fetch_profile_payload(handle: str) -> dict:
             )
             resp = await voyager_get(client, gql_url)
             logger.info("GraphQL profile fetch -> %s", resp.status_code)
-            if resp.status_code == 200:
-                return resp.json()
+            payload = _json_or_none(resp) if resp.status_code == 200 else None
+            if _usable(payload):
+                return payload
             last_status, last_body = resp.status_code, resp.text[:200]
-            logger.warning("GraphQL fetch failed (%s)", resp.status_code)
+            logger.warning("GraphQL fetch not usable (status %s)", resp.status_code)
 
-        # ---- Strategy 3: legacy profileView ---------------------------------
+        # ---- Strategy 2: legacy profileView ---------------------------------
         legacy_url = f"{VOYAGER_BASE}/identity/profiles/{quote(handle)}/profileView"
         resp = await voyager_get(client, legacy_url)
         logger.info("profileView fetch -> %s", resp.status_code)
-        if resp.status_code == 200:
-            return resp.json()
+        payload = _json_or_none(resp) if resp.status_code == 200 else None
+        if _usable(payload):
+            return payload
         last_status, last_body = resp.status_code, resp.text[:200]
 
-    # ---- Strategy 2: Embedded HTML JSON (separate browser-style client) ------
-    async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT, follow_redirects=True) as html_client:
-        html_resp = await html_client.get(
-            f"https://www.linkedin.com/in/{quote(handle)}/", headers=build_html_headers()
-        )
+    # ---- Strategy 3: Embedded HTML JSON (separate browser-style client) ------
+    html_resp = await _fetch_profile_html(handle)
     logger.info("HTML profile fetch -> %s", html_resp.status_code)
     if html_resp.status_code == 200:
         payload = extract_embedded_payload(html_resp.text)
-        if payload.get("included"):
+        if _usable(payload):
             logger.info("Extracted %d embedded objects from HTML", len(payload["included"]))
             return payload
-        logger.warning("HTML fetched but no embedded profile JSON found (login wall?).")
+        logger.warning("HTML fetched but no usable profile JSON found (login wall / soft block).")
     if last_status == "n/a":
         last_status = html_resp.status_code
 
@@ -281,27 +337,41 @@ def extract_embedded_payload(html_text: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Parsing — normalized payload -> ProfileResponse
 # --------------------------------------------------------------------------- #
+def _date_range(item: dict) -> dict:
+    """The date container differs by schema: classic uses `timePeriod`, dash uses
+    `dateRange`. Return whichever is present."""
+    rng = item.get("dateRange") or item.get("timePeriod") or {}
+    return rng if isinstance(rng, dict) else {}
+
+
+def _date_node(rng: dict, which: str) -> dict:
+    """Get the start/end node. dash: start/end; classic: startDate/endDate."""
+    node = rng.get(which) or rng.get(f"{which}Date") or {}
+    return node if isinstance(node, dict) else {}
+
+
+def _fmt_date(d: dict) -> str | None:
+    if not d:
+        return None
+    year, month = d.get("year"), d.get("month")
+    if year and month:
+        return f"{year}-{month:02d}"
+    return str(year) if year else None
+
+
 def _time_period(item: dict) -> tuple[str | None, str | None]:
-    """Extract start/end date strings from a Voyager timePeriod object."""
-    tp = item.get("timePeriod") or {}
-    start = tp.get("startDate") or {}
-    end = tp.get("endDate") or {}
-
-    def fmt(d: dict) -> str | None:
-        if not d:
-            return None
-        year = d.get("year")
-        month = d.get("month")
-        if year and month:
-            return f"{year}-{month:02d}"
-        return str(year) if year else None
-
-    return fmt(start), fmt(end) or "Present"
+    """Extract (start, end) date strings, handling both classic and dash schemas.
+    A missing end means an ongoing role -> 'Present'."""
+    rng = _date_range(item)
+    start = _fmt_date(_date_node(rng, "start"))
+    end = _fmt_date(_date_node(rng, "end"))
+    return start, (end or "Present")
 
 
-def _year(item: dict, key: str) -> int | None:
-    tp = item.get("timePeriod") or {}
-    node = tp.get(key) or {}
+def _year(item: dict, which: str) -> int | None:
+    """Year for start/end. Accepts 'start'/'end' or legacy 'startDate'/'endDate'."""
+    which = which.replace("Date", "")
+    node = _date_node(_date_range(item), which)
     year = node.get("year")
     return int(year) if year else None
 
@@ -362,14 +432,17 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     by_urn = {it["entityUrn"]: it for it in included if it.get("entityUrn")}
 
     def _resolve_company(item: dict) -> str | None:
-        """Company name may be inline (classic) or a URN reference (dash)."""
-        val = item.get("companyName") or item.get("company")
+        """Company name may be an inline literal (`companyName`, classic) or come
+        via `company` (a nested dict, or a URN string that resolves against
+        `included`, dash)."""
+        name = item.get("companyName")
+        if isinstance(name, str) and name:
+            return name  # classic: literal name, NOT a URN
+        val = item.get("company")
         if isinstance(val, dict):
             return val.get("name")
         if isinstance(val, str):
-            # dash: URN -> resolve to a Company object in `included`
-            ref = by_urn.get(val) or {}
-            return ref.get("name") or None
+            return (by_urn.get(val) or {}).get("name") or None  # dash: URN -> Company
         return None
 
     profile_obj: dict = {}

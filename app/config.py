@@ -27,6 +27,25 @@ class Settings(BaseSettings):
     # How long (seconds) to wait on LinkedIn before giving up.
     REQUEST_TIMEOUT: float = 15.0
 
+    # Optional outbound proxy (e.g. a residential proxy) for all LinkedIn requests.
+    # LinkedIn flags IPs that send automated traffic; routing through a rotating
+    # residential proxy is how this is run reliably. Format: http://user:pass@host:port
+    # Empty = direct connection. (A proxy is network routing, not a browser engine,
+    # so this stays within the "httpx only, no browser" constraint.)
+    LINKEDIN_PROXY: str = ""
+
+    # Expose the /api/v1/debug/* routes. These let a caller drive arbitrary
+    # Voyager requests using the server's session cookie, so they MUST stay off
+    # on any public deployment. Off by default; enable only for local debugging.
+    ENABLE_DEBUG_ROUTES: bool = False
+
+    # Serve a cached profile for this many seconds (keyed on handle). Protects the
+    # backing LinkedIn account from repeated hits on a public endpoint.
+    CACHE_TTL_SECONDS: int = 900  # 15 minutes
+
+    # Max parse-profile requests per client IP per minute (basic abuse guard).
+    RATE_LIMIT_PER_MINUTE: int = 20
+
     # Pydantic settings config to auto-read .env file
     model_config = SettingsConfigDict(
         env_file=".env",
