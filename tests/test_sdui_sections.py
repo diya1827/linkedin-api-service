@@ -102,7 +102,7 @@ def test_parse_education_certs_skills_languages():
 
 def test_malformed_card_yields_empty_sections_not_error():
     res = S.cards_to_sections({"profileCardsBelowActivityPart2": "garbage", "x": "0:[1,2"})
-    assert res == {"experience": [], "education": [], "skills": [], "certifications": [], "languages": [], "volunteering": []}
+    assert res == {"experience": [], "education": [], "skills": [], "certifications": [], "languages": [], "volunteering": [], "about": None}
 
 
 REHYDRATION_HTML = (
@@ -132,6 +132,16 @@ def test_extract_component_requests_only_section_cards_and_reshapes_body():
     assert ca["states"] == [] and ca["screenId"] == "" and ca["knownTemplateIds"] == []
     assert "$type" not in ca and "requestedStateKeys" not in ca
     assert S.extract_page_instance(REHYDRATION_HTML) == "urn:li:page:d_flagship3_profile_view_base;abc=="
+
+
+def test_about_card_and_top_card_location():
+    about = _flight({"0": _card("profileCardsAboveActivity", "About", [_item("I build things.", "Mostly backend.")])})
+    assert S.cards_to_sections({"profileCardsAboveActivity": about})["about"] == "I build things. Mostly backend."
+    html = ('<script>window.__como_rehydration__ = ' + json.dumps([
+        '0:' + json.dumps(["$", "div", None, {"children": [_p("Jane Doe"), _p("Engineer"), _p("Acme · MIT"), _p("Delhi, India"), _p("·"), _p("Contact info")]}])
+    ]) + ';</script>')
+    assert S.extract_top_card_location(html) == "Delhi, India"
+    assert S.extract_top_card_location("<html></html>") is None
 
 
 def test_extract_on_non_sdui_page_is_empty():

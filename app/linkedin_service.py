@@ -568,7 +568,9 @@ async def fetch_profile_sections(handle: str, html_text: str | None = None) -> d
             li_track=api["x-li-track"],
             proxy=_proxy(),
         )
-        return sdui_sections.cards_to_sections(cards)
+        sections = sdui_sections.cards_to_sections(cards)
+        sections["location"] = sdui_sections.extract_top_card_location(html_text)
+        return sections
     except HTTPException:
         raise
     except Exception as exc:
@@ -586,9 +588,12 @@ async def fetch_linkedin_profile_voyager(profile_url: str, include_sections: boo
     profile = parse_voyager_json(profile_url, handle, data)
     if include_sections:
         sections = await fetch_profile_sections(handle)
+        top_location = sections.pop("location", None)
         for field, values in sections.items():
             if values:
                 setattr(profile, field, values)
+        if profile.location is None and top_location:
+            profile.location = Location(raw_location=top_location)
     return profile
 
 

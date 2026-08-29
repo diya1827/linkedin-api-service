@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 COMPONENT_ENDPOINT = "https://www.linkedin.com/flagship-web/rsc-action/actions/component"
 _COMPONENT_PREFIX = "com.linkedin.sdui.generated.profile.dsl.impl."
 # Only the cards that hold profile sections. Aside/recommendation cards are skipped.
-_SECTION_CARD_RE = re.compile(r"^profileCards(ExperienceOnly|BelowActivityPart\d+(WithoutExp)?)$")
+_SECTION_CARD_RE = re.compile(r"^profileCards(AboveActivity|ExperienceOnly|BelowActivityPart\d+(WithoutExp)?)$")
 # Polite spacing between the per-card POSTs (one profile = up to ~8 calls).
 _INTER_REQUEST_DELAY_S = 0.4
 
@@ -127,6 +127,33 @@ def extract_component_requests(html_text: str) -> dict[str, dict]:
             if _SECTION_CARD_RE.match(short) and short not in found:
                 found[short] = d.get("requestedArguments") or {}
     return found
+
+
+def extract_top_card_location(html_text: str) -> str | None:
+    """
+    The intro card is the one region LinkedIn server-renders. Its visible text
+    runs: name, headline, [pronouns], "Company · School", LOCATION, "·",
+    "Contact info". Return that location line, or None.
+    """
+    m = _REHYDRATION_RE.search(html_text)
+    if not m:
+        return None
+    try:
+        chunks = json.loads(m.group(1))
+    except ValueError:
+        return None
+    rows = parse_flight("".join(c for c in chunks if isinstance(c, str)))
+    ev: list = []
+    for key in sorted(rows, key=lambda k: int(k, 16)):
+        _walk(rows[key], rows, ev)
+    texts = [e[1] for e in ev if e[0] == "text"]
+    for i, t in enumerate(texts):
+        if t == "Contact info":
+            for prev in reversed(texts[max(0, i - 3):i]):
+                if prev != "·" and 2 <= len(prev) <= 80:
+                    return prev
+            return None
+    return None
 
 
 def extract_page_instance(html_text: str) -> str:
@@ -481,14 +508,15 @@ _HEADING_TO_FIELD = {
     "Language": "languages",
     "VolunteerExperience": "volunteering",
     "Volunteering": "volunteering",
+    "About": "about",
 }
 
 
-def cards_to_sections(cards: dict[str, str]) -> dict[str, list]:
+def cards_to_sections(cards: dict[str, str]) -> dict[str, Any]:
     """Merge every fetched card into the ProfileResponse section fields."""
-    result: dict[str, list] = {
+    result: dict[str, Any] = {
         "experience": [], "education": [], "skills": [], "certifications": [], "languages": [],
-        "volunteering": [],
+        "volunteering": [], "about": None,
     }
     for card, flight in cards.items():
         try:
@@ -500,7 +528,10 @@ def cards_to_sections(cards: dict[str, str]) -> dict[str, list]:
             field = _HEADING_TO_FIELD.get(heading)
             if not field or not items:
                 continue
-            if field in ("experience", "volunteering"):
+            if field == "about":
+                text = " ".join(ln for item in items for ln in _clean_lines(item)).strip()
+                result["about"] = result["about"] or text or None
+            elif field in ("experience", "volunteering"):
                 result[field].extend(parse_experience(items))
             elif field == "education":
                 result[field].extend(parse_education(items))
