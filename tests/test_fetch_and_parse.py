@@ -97,7 +97,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_soft_block_empty_200_raises_502_not_hollow(monkeypatch):
+def test_empty_200_raises_404_not_hollow(monkeypatch):
     monkeypatch.setattr(settings, "LINKEDIN_PROFILE_QUERY_ID", "voyagerIdentityDashProfiles.test")
 
     def handler(request):  # every API call returns an empty-included 200 (soft block)
@@ -112,7 +112,41 @@ def test_soft_block_empty_200_raises_502_not_hollow(monkeypatch):
 
     with pytest.raises(ls.HTTPException) as ei:
         _run(ls.fetch_profile_payload("diya"))
-    assert ei.value.status_code == 502  # honest failure, not a hollow 200
+    assert ei.value.status_code == 404  # "no such profile", not a hollow 200 or a cookie hint
+    assert "diya" in ei.value.detail
+
+
+def test_rejected_session_raises_503(monkeypatch):
+    monkeypatch.setattr(settings, "LINKEDIN_PROFILE_QUERY_ID", "voyagerIdentityDashProfiles.test")
+
+    def handler(request):  # LinkedIn bounces every API call to login
+        return httpx.Response(302, headers={"location": "/uas/login?redirect=1"})
+
+    monkeypatch.setattr(ls, "make_voyager_client", lambda follow=False: _client_with(handler))
+    async def login_html(handle):
+        return httpx.Response(302, headers={"location": "/authwall"})
+    monkeypatch.setattr(ls, "_fetch_profile_html", login_html)
+
+    with pytest.raises(ls.HTTPException) as ei:
+        _run(ls.fetch_profile_payload("diya"))
+    assert ei.value.status_code == 503
+    assert "session" in ei.value.detail.lower()
+
+
+def test_bot_block_999_raises_503(monkeypatch):
+    monkeypatch.setattr(settings, "LINKEDIN_PROFILE_QUERY_ID", "")
+
+    def handler(request):
+        return httpx.Response(410)
+
+    monkeypatch.setattr(ls, "make_voyager_client", lambda follow=False: _client_with(handler))
+    async def blocked(handle):
+        return httpx.Response(999, text="")
+    monkeypatch.setattr(ls, "_fetch_profile_html", blocked)
+
+    with pytest.raises(ls.HTTPException) as ei:
+        _run(ls.fetch_profile_payload("diya"))
+    assert ei.value.status_code == 503 and "999" in ei.value.detail
 
 
 def test_html_200_challenge_does_not_crash(monkeypatch):

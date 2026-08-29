@@ -106,7 +106,10 @@ async def parse_profile(payload: ProfileRequest, request: Request):
 
     cached = _cache_get(cache_key)
     if cached is not None:
-        return cached
+        hit = cached.model_copy(deep=True)
+        if hit.meta is not None:
+            hit.meta.cached = True
+        return hit
 
     try:
         response_data = await fetch_linkedin_profile_voyager(

@@ -2,6 +2,8 @@ import re
 import json
 import html as html_lib
 import logging
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
@@ -9,7 +11,7 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import settings
-from app.schemas import ProfileResponse, Location, ExperienceItem, EducationItem
+from app.schemas import ProfileResponse, ResponseMeta, Location, ExperienceItem, EducationItem
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +252,8 @@ async def fetch_profile_payload(handle: str) -> dict:
     query_id = clean_token(settings.LINKEDIN_PROFILE_QUERY_ID)
     last_status = "n/a"
     last_body = ""
+    gql_status: int | None = None
+    gql_empty = False  # 200 but no profile entity: not found / not visible / soft block
 
     # API strategies share a cookie jar so JSESSIONID rotation is handled once.
     async with make_voyager_client() as client:
@@ -262,9 +266,11 @@ async def fetch_profile_payload(handle: str) -> dict:
             )
             resp = await voyager_get(client, gql_url)
             logger.info("GraphQL profile fetch -> %s", resp.status_code)
+            gql_status = resp.status_code
             payload = _json_or_none(resp) if resp.status_code == 200 else None
             if _usable(payload):
                 return payload
+            gql_empty = resp.status_code == 200 and payload is not None
             last_status, last_body = resp.status_code, resp.text[:200]
             logger.warning("GraphQL fetch not usable (status %s)", resp.status_code)
 
@@ -275,7 +281,8 @@ async def fetch_profile_payload(handle: str) -> dict:
         payload = _json_or_none(resp) if resp.status_code == 200 else None
         if _usable(payload):
             return payload
-        last_status, last_body = resp.status_code, resp.text[:200]
+        if resp.status_code != 410:  # 410 = endpoint retired, says nothing about this profile
+            last_status, last_body = resp.status_code, resp.text[:200]
 
     # ---- Strategy 3: Embedded HTML JSON (separate browser-style client) ------
     html_resp = await _fetch_profile_html(handle)
@@ -289,9 +296,29 @@ async def fetch_profile_payload(handle: str) -> dict:
     if last_status == "n/a":
         last_status = html_resp.status_code
 
+    # ---- Nothing worked: say WHY, with the right status code -----------------
+    session_dead = {302, 401, 403}
+    if gql_status in session_dead or html_resp.status_code in session_dead:
+        raise HTTPException(
+            status_code=503,
+            detail="LinkedIn session rejected (expired or revoked cookies). Refresh "
+                   "LINKEDIN_LI_AT_COOKIE / LINKEDIN_JSESSIONID; GET /health reports the session state.",
+        )
+    if html_resp.status_code == 999:
+        raise HTTPException(
+            status_code=503,
+            detail="LinkedIn anti-bot layer blocked the request (HTTP 999). Back off, "
+                   "or route through LINKEDIN_PROXY.",
+        )
+    if gql_empty:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No profile found for handle '{handle}'. Either it does not exist, is "
+                   "not visible to the backing account, or LinkedIn soft-blocked the lookup.",
+        )
     hint = (
         " Set LINKEDIN_PROFILE_QUERY_ID in .env to a current GraphQL queryId, or "
-        "verify cookies via GET /api/v1/debug/auth."
+        "verify cookies via GET /health."
     )
     raise HTTPException(
         status_code=502,
@@ -557,12 +584,14 @@ async def fetch_profile_sections(handle: str, html_text: str | None = None) -> d
                 logger.warning("Sections: profile HTML fetch -> %s", html_resp.status_code)
                 return sdui_sections.cards_to_sections({})
             html_text = html_resp.text
-        li_at, csrf_token = _load_credentials()
+        jar = _seed_jar()
+        csrf_token = (jar.get("JSESSIONID") or "").strip('"')
+        cookie_header = "; ".join(f"{c.name}={c.value}" for c in jar.jar)
         api = _api_headers(csrf_token)
         cards = await sdui_sections.fetch_section_cards(
             handle,
             html_text,
-            cookie_header=f'li_at={li_at}; JSESSIONID="{csrf_token}"',
+            cookie_header=cookie_header,
             csrf_token=csrf_token,
             user_agent=api["User-Agent"],
             li_track=api["x-li-track"],
@@ -570,6 +599,7 @@ async def fetch_profile_sections(handle: str, html_text: str | None = None) -> d
         )
         sections = sdui_sections.cards_to_sections(cards)
         sections["location"] = sdui_sections.extract_top_card_location(html_text)
+        sections["_cards"] = sorted(cards)
         return sections
     except HTTPException:
         raise
@@ -583,17 +613,26 @@ async def fetch_linkedin_profile_voyager(profile_url: str, include_sections: boo
     (optionally) the lazily-loaded sections merged on top. The graphql intro
     card only ever yields the top card, so sections come from the SDUI path;
     anything the card path already found is kept when the SDUI path is empty."""
+    started = time.monotonic()
     handle = extract_handle_from_url(profile_url)
     data = await fetch_profile_payload(handle)
     profile = parse_voyager_json(profile_url, handle, data)
+    cards: list[str] = []
     if include_sections:
         sections = await fetch_profile_sections(handle)
         top_location = sections.pop("location", None)
+        cards = sections.pop("_cards", [])
         for field, values in sections.items():
             if values:
                 setattr(profile, field, values)
         if profile.location is None and top_location:
             profile.location = Location(raw_location=top_location)
+    profile.meta = ResponseMeta(
+        fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+        sections_requested=include_sections,
+        section_cards_fetched=cards,
+    )
     return profile
 
 

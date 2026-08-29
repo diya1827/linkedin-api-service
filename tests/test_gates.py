@@ -66,6 +66,7 @@ def test_repeat_request_served_from_cache(monkeypatch):
     r2 = client.post("/api/v1/parse-profile", json=body)
 
     assert r1.status_code == 200 and r2.status_code == 200
+    assert r2.json()["meta"] is None or r2.json()["meta"]["cached"] is True
     assert r1.json()["full_name"] == "Foo Bar"
     assert calls["n"] == 1  # second request served from cache, no second fetch
 

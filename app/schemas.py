@@ -29,6 +29,16 @@ class ProfileRequest(BaseModel):
     # false for the cheap intro-card-only path.
     include_sections: bool = True
 
+class ResponseMeta(BaseModel):
+    """Provenance for the caller: when it was fetched, how long it took, whether
+    it came from the cache, and which SDUI section cards were actually read."""
+    fetched_at: Optional[str] = None
+    elapsed_ms: Optional[int] = None
+    cached: bool = False
+    sections_requested: bool = True
+    section_cards_fetched: List[str] = []
+
+
 class ProfileResponse(BaseModel):
     profile_url: str
     profile_handle: str
@@ -45,3 +55,4 @@ class ProfileResponse(BaseModel):
     certifications: List[str] = []
     languages: List[str] = []
     volunteering: List[ExperienceItem] = []  # title=role, company_name=organisation
+    meta: Optional[ResponseMeta] = None

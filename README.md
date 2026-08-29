@@ -43,10 +43,11 @@ Voyager directly:
    2. **Fallback — legacy REST:** `GET /voyager/api/identity/profiles/<handle>/profileView`
       (deprecated — usually `410` — best-effort only).
    3. **Fallback — server-rendered Voyager JSON:** fetch the profile page and
-      extract the Voyager API responses LinkedIn **embeds in the HTML** (inside
-      `<code>` blocks). This is *not* HTML/DOM scraping — it reads the same
-      normalized Voyager JSON, just delivered inline in the document. Still no
-      browser engine.
+      extract any Voyager API responses LinkedIn embeds in `<code>` blocks. This
+      is the *legacy* (Ember) page shell; the current SDUI page has no such
+      blocks, so this only helps if LinkedIn serves the old shell (it still does
+      for some accounts/regions). Kept because it costs nothing and never scrapes
+      the DOM.
 3. **Parse** the normalized `included[]` graph into a typed `ProfileResponse`.
    The parser dispatches on the tail of each object's `$type`, so it handles both
    the classic (`...voyager.identity.profile.*`) and current dash
@@ -59,7 +60,7 @@ Voyager directly:
    blob, the exact `AsyncComponentRequest` the browser would POST to
    `/flagship-web/rsc-action/actions/component` to fill it. `app/sdui_sections.py`
    lifts those requests out of the HTML and replays them with `httpx` (one POST per
-   card, ~8 per profile, 0.4 s apart), then parses the returned React-Server-
+   card, ~9 per profile, at most 4 in flight), then parses the returned React-Server-
    Components flight payload: visible text is walked in render order and split
    into entries by the card's collection items. No JavaScript, no scrolling, no
    browser engine. Section fetches are best-effort: any failure logs and yields
@@ -128,8 +129,11 @@ Use `linkedin_session` to tell at a glance whether the backing cookies still wor
 ### `POST /api/v1/parse-profile`
 **Request**
 ```json
-{ "profile_url": "https://www.linkedin.com/in/<handle>/" }
+{ "profile_url": "https://www.linkedin.com/in/<handle>/", "include_sections": true }
 ```
+`include_sections` (default `true`) controls the SDUI section fetch. `false`
+returns the intro card only (1-2 LinkedIn calls instead of ~11) and is cached
+separately. Interactive docs: `GET /docs` (OpenAPI).
 **Response `200` — `ProfileResponse`**
 ```json
 {
@@ -154,9 +158,15 @@ Use `linkedin_session` to tell at a glance whether the backing cookies still wor
   "skills": ["Python"],
   "volunteering": [ { "title": "Fellow", "company_name": "Some Org", "start_date": "Aug 2025", "end_date": "Jan 2026" } ],
   "certifications": ["AWS"],
-  "languages": ["English"]
+  "languages": ["English"],
+  "meta": { "fetched_at": "2026-08-30T10:00:00+00:00", "elapsed_ms": 3200, "cached": false,
+            "sections_requested": true, "section_cards_fetched": ["profileCardsExperienceOnly", "..."] }
 }
 ```
+`meta` is provenance for the caller: when the data was fetched, how long LinkedIn
+took, whether this response came from the TTL cache, and which section cards were
+actually read (an empty list with `sections_requested: true` means the section
+fetch was blocked and the intro card alone was returned).
 Any field LinkedIn does not expose is returned as `null` or an empty list rather
 than causing an error.
 
@@ -164,21 +174,23 @@ than causing an error.
 | Code  | Meaning                                                              |
 | ----- | ------------------------------------------------------------------- |
 | `400` | Malformed LinkedIn profile URL.                                     |
+| `404` | No profile for that handle: it does not exist, is not visible to the backing account, or LinkedIn soft-blocked the lookup. |
 | `422` | Request body failed validation (e.g. missing `profile_url`).       |
-| `500` | Credentials missing from server config.                            |
 | `429` | Per-IP rate limit exceeded.                                        |
-| `502` | All fetch strategies failed or returned no usable profile (expired cookies / stale `queryId` / soft block). |
+| `500` | Credentials missing from server config.                            |
+| `503` | LinkedIn rejected the session (expired/revoked cookies, `/health` says `expired`) or its anti-bot layer answered `999`. Refresh cookies / back off. |
+| `502` | Every strategy failed for another reason (usually a stale `queryId`); the detail names the last status. |
 
 ### Debug endpoints (OFF by default)
 The `GET /api/v1/debug/*` routes drive arbitrary Voyager requests using the
 server's session cookie, so they are **disabled unless `ENABLE_DEBUG_ROUTES=true`**.
 Enable them only for local debugging; they return `404` on a default/public deploy.
 
-## If this returns `502` when you test it
+## If this returns `503` or `502` when you test it
 
-The most likely reason is an **expired session** — `li_at`/`JSESSIONID` cookies
-expire and LinkedIn rotates the GraphQL `queryId` every few weeks. This is
-inherent to a reverse-engineered integration, not a bug.
+`503` means the **session** is the problem (`li_at`/`JSESSIONID` expired or
+revoked, or a `999` bot block); `502` usually means the GraphQL `queryId` rotated.
+Both are inherent to a reverse-engineered integration, not bugs in the service.
 
 1. **Check** `GET /health`. If `linkedin_session` is `expired` (or `not_configured`),
    that's the cause.
@@ -195,6 +207,48 @@ inherent to a reverse-engineered integration, not a bug.
 Responses are cached per handle (`CACHE_TTL_SECONDS`, default 15 min) and requests
 are rate-limited per IP (`RATE_LIMIT_PER_MINUTE`, default 20) to avoid hammering —
 and restricting — the backing LinkedIn account from a public endpoint.
+
+## How the sections endpoint was found
+
+The intro card was easy (a versioned GraphQL query). The sections were not, and
+the path to them is the interesting part of this repo:
+
+1. **The GraphQL hypothesis was wrong.** Four HAR captures of a profile page load
+   contained zero `Position`/`Education`/`Skill` entities and no section
+   `queryId`. The only `voyagerIdentityDashProfiles` call on the page is the
+   nav-bar *self*-profile fetch. There is no section query to capture.
+2. **The document HTML is also empty.** The authenticated page (`~950 KB`)
+   server-renders only the intro card. Every section is an empty placeholder
+   `<div id="profileCardsExperienceOnly<handle>">`, with no `<h2>` and no entry
+   markup. So the sections are neither an XHR nor in the page.
+3. **The placeholders carry their own fetch recipe.** The page's hydration blob
+   (`window.__como_rehydration__`, a JSON array of React Server Components
+   "flight" rows) contains, per placeholder, a
+   `proto.sdui.actions.core.ReplaceComponent` whose `asyncContent` is a
+   `proto.sdui.actions.core.AsyncComponentRequest`: `newComponentId`
+   (`com.linkedin.sdui.generated.profile.dsl.impl.profileCardsExperienceOnly`)
+   plus `requestedArguments` (`vanityName`, `vieweeProfileId`, feature flags).
+4. **The endpoint is in the client bundle.** The SDUI runtime builds
+   `` `rsc-action/actions/component?componentId=${id}&sduiid=${id}` `` and POSTs
+   `{clientArguments: sr(requestedArguments)}`; `/flagship-web` is the service
+   base (a `500` there vs a `404` at the root confirmed it).
+5. **The body has to be reshaped.** Posting the raw `RequestedArguments` returns
+   `500`. The runtime's `sr()` drops `$type`/`requestedStateKeys` and adds
+   `states: []`, `screenId: ""`, `knownTemplateIds: []`. With that, the endpoint
+   returns `200` and a `~170 KB` flight payload holding the whole card.
+6. **The headers that matter** are `csrf-token` (= unquoted `JSESSIONID`),
+   `x-li-rsc-stream: true`, `x-li-page-instance` (lifted from the same page),
+   `x-li-track` and a User-Agent / client-hints set that matches the browser the
+   cookies were minted in. A mismatched fingerprint is treated as session
+   hijacking and revokes the cookie globally; this bit cost several logins.
+7. **Parsing** walks the React element tree in render order. Visible text is
+   plain strings in `children` arrays; entries are the card's `initialItems`;
+   section headings are `ProfileNullStateCardAnchor_<Section>` component keys;
+   media captions are identified by a sibling `a11yText: "Thumbnail for …"`.
+   Grouped multi-role companies come flat inside one item and are split on date
+   lines.
+
+Everything above is `httpx` only. No JavaScript is executed at any point.
 
 ## Known limitations
 
@@ -223,10 +277,12 @@ and restricting — the backing LinkedIn account from a public endpoint.
 - **Terms of Service.** Automated access to LinkedIn may violate its ToS. This
   project is for educational/demonstration purposes.
 
-## Production scaling (how this is run reliably at volume)
+## Hardening for volume (not implemented here, by design)
 
 Reverse-engineered LinkedIn access is an adversarial target; single-machine,
-single-IP operation *will* get flagged. A production deployment layers on:
+single-IP operation *will* get flagged at volume. This submission runs on one
+account and one IP on purpose (keep the test surface small). A real deployment
+would layer on:
 
 - **Rotating residential/mobile proxies**, rotated **per session** (not per
   request, so cookies stay sticky). Empirically ~**20–30 profile requests per IP

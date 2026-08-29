@@ -44,8 +44,9 @@ COMPONENT_ENDPOINT = "https://www.linkedin.com/flagship-web/rsc-action/actions/c
 _COMPONENT_PREFIX = "com.linkedin.sdui.generated.profile.dsl.impl."
 # Only the cards that hold profile sections. Aside/recommendation cards are skipped.
 _SECTION_CARD_RE = re.compile(r"^profileCards(AboveActivity|ExperienceOnly|BelowActivityPart\d+(WithoutExp)?)$")
-# Polite spacing between the per-card POSTs (one profile = up to ~8 calls).
-_INTER_REQUEST_DELAY_S = 0.4
+# The real browser fires every card request at once on page load; we cap
+# in-flight requests instead so one profile never looks like a burst of nine.
+_MAX_CONCURRENT_CARDS = 4
 
 _REHYDRATION_RE = re.compile(
     r"window\.__como_rehydration__\s*=\s*(\[.*?\])\s*;?\s*</script>", re.DOTALL
@@ -226,11 +227,14 @@ async def fetch_section_cards(
     )
     headers["Cookie"] = cookie_header
     out: dict[str, str] = {}
-    async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT, proxy=proxy) as client:
-        for i, (card, req_args) in enumerate(requests_by_card.items()):
-            if i:
-                await asyncio.sleep(_INTER_REQUEST_DELAY_S)
-            cid = _COMPONENT_PREFIX + card
+    blocked = asyncio.Event()
+    sem = asyncio.Semaphore(_MAX_CONCURRENT_CARDS)
+
+    async def one(client: httpx.AsyncClient, card: str, req_args: dict) -> None:
+        cid = _COMPONENT_PREFIX + card
+        async with sem:
+            if blocked.is_set():
+                return
             try:
                 resp = await client.post(
                     COMPONENT_ENDPOINT,
@@ -240,14 +244,17 @@ async def fetch_section_cards(
                 )
             except httpx.HTTPError as exc:
                 logger.warning("SDUI card %s failed: %s", card, exc)
-                continue
-            logger.info("SDUI card %s -> %s (%d bytes)", card, resp.status_code, len(resp.content))
-            if resp.status_code == 200 and resp.text.lstrip()[:1].isalnum():
-                out[card] = resp.text
-            elif resp.status_code in (999, 302, 403):
-                # Bot flag / session bounce: stop immediately, do not hammer.
-                logger.warning("SDUI card fetch blocked with %s; aborting remaining cards", resp.status_code)
-                break
+                return
+        logger.info("SDUI card %s -> %s (%d bytes)", card, resp.status_code, len(resp.content))
+        if resp.status_code == 200 and resp.text.lstrip()[:1].isalnum():
+            out[card] = resp.text
+        elif resp.status_code in (999, 302, 403):
+            # Bot flag / session bounce: stop everything still queued, do not hammer.
+            logger.warning("SDUI card fetch blocked with %s; skipping remaining cards", resp.status_code)
+            blocked.set()
+
+    async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT, proxy=proxy) as client:
+        await asyncio.gather(*(one(client, c, a) for c, a in requests_by_card.items()))
     return out
 
 

@@ -158,7 +158,6 @@ def test_fetch_section_cards_replays_requests(monkeypatch):
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(handler), **{k: v for k, v in kw.items() if k != "proxy"}))
-    monkeypatch.setattr(S, "_INTER_REQUEST_DELAY_S", 0)
     cards = asyncio.run(S.fetch_section_cards("someone", REHYDRATION_HTML, cookie_header='li_at=x; JSESSIONID="ajax:1"',
                                               csrf_token="ajax:1", user_agent="UA", li_track="{}"))
     assert list(cards) == ["profileCardsExperienceOnly"]
