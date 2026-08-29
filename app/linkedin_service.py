@@ -1,5 +1,7 @@
 import re
+import os
 import json
+import base64
 import html as html_lib
 import logging
 from pathlib import Path
@@ -47,28 +49,47 @@ def _load_credentials() -> tuple[str, str]:
     return li_at, csrf_token
 
 
+def _tracking_id() -> str:
+    """A fresh base64 tracking id per request, matching the browser's page-instance
+    suffix (a static value would itself be a bot signal)."""
+    return base64.b64encode(os.urandom(16)).decode()
+
+
 def _api_headers(csrf_token: str) -> dict:
     """
-    Voyager JSON-API headers. Note: no Cookie header here — cookies are managed by
-    the httpx client's cookie jar (see make_voyager_client) so that a JSESSIONID
-    rotated mid-flight (via Set-Cookie on a 302) stays consistent with csrf-token.
+    Voyager JSON-API headers, matched against a REAL Chrome/Voyager request captured
+    from the browser's network tab so they're indistinguishable from the web app at
+    the header level. The stale/fake bits that used to give us away (and are now
+    fixed): an obviously-fake x-li-track clientVersion, an old User-Agent, Accept
+    +2.0 (LinkedIn uses +2.1), a "dummy" page-instance, and missing sec-* hints.
+
+    Note: no Cookie header here — cookies are managed by the client's jar so a
+    JSESSIONID rotated mid-flight (via Set-Cookie on a 302) stays in sync with csrf.
     """
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/vnd.linkedin.normalized+json+2.0",
-        "Accept-Language": "en-US,en;q=0.9",
-        "x-li-lang": "en_US",
-        "x-li-track": (
-            '{"clientVersion":"1.13.0","osName":"web","timezoneOffset":0,'
-            '"deviceFormFactor":"DESKTOP","mpName":"voyager-web"}'
-        ),
-        "x-li-page-instance": "urn:li:page:d_flagship3_profile_view_base;dummy",
-        "x-restli-protocol-version": "2.0.0",
+        "accept": "application/vnd.linkedin.normalized+json+2.1",
+        "accept-language": "en-US,en;q=0.9",
         "csrf-token": csrf_token,
-        "Referer": "https://www.linkedin.com/feed/",
+        "priority": "u=1, i",
+        "referer": "https://www.linkedin.com/feed/",
+        "sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        ),
+        "x-li-lang": "en_US",
+        "x-li-page-instance": "urn:li:page:d_flagship3_profile_view_base;" + _tracking_id(),
+        "x-li-track": (
+            '{"clientVersion":"1.13.46267","mpVersion":"1.13.46267","osName":"web",'
+            '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
+            '"mpName":"voyager-web","displayDensity":1.5,"displayWidth":1920,"displayHeight":1080}'
+        ),
+        "x-restli-protocol-version": "2.0.0",
     }
 
 
