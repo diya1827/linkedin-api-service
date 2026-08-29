@@ -152,6 +152,7 @@ Use `linkedin_session` to tell at a glance whether the backing cookies still wor
       "start_year": 2018, "end_year": 2022 }
   ],
   "skills": ["Python"],
+  "volunteering": [ { "title": "Fellow", "company_name": "Some Org", "start_date": "Aug 2025", "end_date": "Jan 2026" } ],
   "certifications": ["AWS"],
   "languages": ["English"]
 }

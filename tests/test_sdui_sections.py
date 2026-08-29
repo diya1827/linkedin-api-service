@@ -59,6 +59,7 @@ EDU_FLIGHT = _flight({
             _card("ignored", "Certifications", [_item("Cert A", "Issuer A", "Issued Jul 2025"), _item("Cert B", "Issuer B")]),
             _card("ignored", "Skills", [_item("Code Review"), _item("Test Coverage")]),
             _card("ignored", "Languages", [_item("English", "Native or bilingual proficiency")]),
+            _card("ignored", "VolunteerExperience", [_item("Fellow", "Some Org", "Aug 2025 - Jan 2026 · 6 mos", "Social Services")]),
         ],
     }]
 })
@@ -95,11 +96,13 @@ def test_parse_education_certs_skills_languages():
     assert res["certifications"] == ["Cert A", "Cert B"]
     assert res["skills"] == ["Code Review", "Test Coverage"]
     assert res["languages"] == ["English"]
+    (vol,) = res["volunteering"]
+    assert (vol.title, vol.company_name, vol.start_date, vol.end_date) == ("Fellow", "Some Org", "Aug 2025", "Jan 2026")
 
 
 def test_malformed_card_yields_empty_sections_not_error():
     res = S.cards_to_sections({"profileCardsBelowActivityPart2": "garbage", "x": "0:[1,2"})
-    assert res == {"experience": [], "education": [], "skills": [], "certifications": [], "languages": []}
+    assert res == {"experience": [], "education": [], "skills": [], "certifications": [], "languages": [], "volunteering": []}
 
 
 REHYDRATION_HTML = (

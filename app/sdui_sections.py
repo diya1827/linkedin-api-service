@@ -466,13 +466,21 @@ def parse_names(items: list[list[str]]) -> list[str]:
     return names
 
 
+# Anchor names observed live: Experience, Education, Skills, Certifications,
+# VolunteerExperience, Interests. The rest are the SDUI naming pattern applied
+# to sections the test profiles did not carry.
 _HEADING_TO_FIELD = {
     "Experience": "experience",
     "Education": "education",
     "Skills": "skills",
     "Certifications": "certifications",
+    "Certification": "certifications",
     "LicensesAndCertifications": "certifications",
+    "LicensesCertifications": "certifications",
     "Languages": "languages",
+    "Language": "languages",
+    "VolunteerExperience": "volunteering",
+    "Volunteering": "volunteering",
 }
 
 
@@ -480,6 +488,7 @@ def cards_to_sections(cards: dict[str, str]) -> dict[str, list]:
     """Merge every fetched card into the ProfileResponse section fields."""
     result: dict[str, list] = {
         "experience": [], "education": [], "skills": [], "certifications": [], "languages": [],
+        "volunteering": [],
     }
     for card, flight in cards.items():
         try:
@@ -491,7 +500,7 @@ def cards_to_sections(cards: dict[str, str]) -> dict[str, list]:
             field = _HEADING_TO_FIELD.get(heading)
             if not field or not items:
                 continue
-            if field == "experience":
+            if field in ("experience", "volunteering"):
                 result[field].extend(parse_experience(items))
             elif field == "education":
                 result[field].extend(parse_education(items))

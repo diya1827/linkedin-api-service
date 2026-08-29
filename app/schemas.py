@@ -44,3 +44,4 @@ class ProfileResponse(BaseModel):
     skills: List[str] = []
     certifications: List[str] = []
     languages: List[str] = []
+    volunteering: List[ExperienceItem] = []  # title=role, company_name=organisation

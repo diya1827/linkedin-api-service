@@ -182,15 +182,16 @@
 
       if (p.about) html += section("About", `<div>${esc(p.about).replace(/\n/g, "<br>")}</div>`);
 
-      // Experience
-      html += section("Experience", (p.experience && p.experience.length)
-        ? p.experience.map(e => `<div class="item">
+      // Experience (also reused for Volunteering below)
+      const roles = (arr) => (arr && arr.length)
+        ? arr.map(e => `<div class="item">
             <div class="t">${esc(e.title) || "—"}</div>
-            <div class="s">${[esc(e.company_name), esc(e.location)].filter(Boolean).join(" · ")}
+            <div class="s">${[esc(e.company_name), esc(e.employment_type), esc(e.location)].filter(Boolean).join(" · ")}
               ${dateRange(e.start_date, e.end_date) ? " · " + esc(dateRange(e.start_date, e.end_date)) : ""}</div>
             ${e.description ? `<div class="d">${esc(e.description).replace(/\n/g, "<br>")}</div>` : ""}
           </div>`).join("")
-        : `<div class="empty">Not available</div>`);
+        : `<div class="empty">Not available</div>`;
+      html += section("Experience", roles(p.experience));
 
       // Education
       html += section("Education", (p.education && p.education.length)
@@ -209,6 +210,7 @@
       html += section("Skills", chips(p.skills));
       html += section("Certifications", chips(p.certifications));
       html += section("Languages", chips(p.languages));
+      if (p.volunteering && p.volunteering.length) html += section("Volunteering", roles(p.volunteering));
 
       html += `<div class="section"><a class="raw" href="${esc(p.profile_url)}" target="_blank" rel="noopener">Open original profile ↗</a></div>`;
       html += `</div>`;
