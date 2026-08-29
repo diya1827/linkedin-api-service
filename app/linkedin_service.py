@@ -544,6 +544,15 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     full_name = f"{first_name or ''} {last_name or ''}".strip() or handle
     picture_url = picture_url or _extract_picture(profile_obj)
 
+    # Follower count lives in a FollowingState object; match it to THIS profile's
+    # URN (there are several FollowingStates — for hashtags the person follows, etc.)
+    prof_urn = profile_obj.get("entityUrn") or ""
+    follower_count = None
+    for it in included:
+        if it.get("$type", "").endswith(".FollowingState") and prof_urn and prof_urn in (it.get("entityUrn") or ""):
+            follower_count = it.get("followerCount")
+            break
+
     geo = profile_obj.get("geoLocation")
     if isinstance(geo, str):  # dash: URN reference
         geo = by_urn.get(geo) or {}
@@ -566,6 +575,7 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
         location=Location(raw_location=raw_loc) if raw_loc else None,
         about=profile_obj.get("summary"),
         profile_image_url=picture_url,
+        follower_count=follower_count,
         experience=experiences,
         education=educations,
         skills=skills,
