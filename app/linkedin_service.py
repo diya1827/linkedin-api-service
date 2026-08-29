@@ -440,6 +440,24 @@ def _extract_picture(item: dict) -> str | None:
     return None
 
 
+def _select_profile(profiles: list[dict], handle: str) -> dict:
+    """
+    A response can contain MORE than one Profile object — notably the *viewer's own*
+    profile alongside the target's. Pick the one whose publicIdentifier/vanityName
+    matches the requested handle; otherwise fall back to the first that has a name.
+    (Without this, a request for someone else's profile can return the viewer's name.)
+    """
+    h = handle.lower()
+    for p in profiles:
+        pub = (p.get("publicIdentifier") or p.get("vanityName") or "").lower()
+        if pub and pub == h:
+            return p
+    for p in profiles:
+        if p.get("firstName") or p.get("lastName"):
+            return p
+    return profiles[0] if profiles else {}
+
+
 def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResponse:
     """
     Turn a normalized Voyager payload into a ProfileResponse.
@@ -466,20 +484,16 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
             return (by_urn.get(val) or {}).get("name") or None  # dash: URN -> Company
         return None
 
-    profile_obj: dict = {}
-    picture_url: str | None = None
+    # Pick the RIGHT profile up front (the target, not the viewer) by handle match.
+    all_profiles = [it for it in included if it.get("$type", "").endswith(".Profile")]
+    profile_obj: dict = _select_profile(all_profiles, handle)
+    picture_url: str | None = _extract_picture(profile_obj)
     experiences, educations, skills, certifications, languages = [], [], [], [], []
 
     for item in included:
         type_str = item.get("$type", "")
 
-        if type_str.endswith(".Profile"):
-            # Prefer the entry that actually carries name fields.
-            if not profile_obj or item.get("firstName"):
-                profile_obj = item
-            picture_url = picture_url or _extract_picture(item)
-
-        elif type_str.endswith(".MiniProfile"):
+        if type_str.endswith(".MiniProfile"):
             picture_url = picture_url or _extract_picture(item)
 
         elif type_str.endswith("profile.Position"):
