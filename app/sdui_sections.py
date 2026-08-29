@@ -212,6 +212,7 @@ async def fetch_section_cards(
     user_agent: str,
     li_track: str,
     proxy: str | None = None,
+    client_hints: dict | None = None,
 ) -> dict[str, str]:
     """
     POST each section card's AsyncComponentRequest and return
@@ -226,6 +227,7 @@ async def fetch_section_cards(
         csrf_token, extract_page_instance(html_text), handle, user_agent, li_track
     )
     headers["Cookie"] = cookie_header
+    headers.update(client_hints or {})
     out: dict[str, str] = {}
     blocked = asyncio.Event()
     sem = asyncio.Semaphore(_MAX_CONCURRENT_CARDS)

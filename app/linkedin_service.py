@@ -1,5 +1,7 @@
 import re
+import os
 import json
+import base64
 import html as html_lib
 import logging
 import time
@@ -49,29 +51,80 @@ def _load_credentials() -> tuple[str, str]:
     return li_at, csrf_token
 
 
-def _api_headers(csrf_token: str) -> dict:
-    """
-    Voyager JSON-API headers. Note: no Cookie header here — cookies are managed by
-    the httpx client's cookie jar (see make_voyager_client) so that a JSESSIONID
-    rotated mid-flight (via Set-Cookie on a 302) stays consistent with csrf-token.
-    """
-    return {
-        "User-Agent": (
+def _tracking_id() -> str:
+    """A fresh base64 tracking id per request, matching the browser's page-instance
+    suffix (a static value would itself be a bot signal)."""
+    return base64.b64encode(os.urandom(16)).decode()
+
+
+# One browser identity for EVERY request (JSON API, document HTML, SDUI cards).
+# It must describe the browser the cookies were minted in: LinkedIn treats a
+# cookie presented from a "different" browser as session hijacking and revokes it
+# globally. Pick the profile with LINKEDIN_BROWSER_PLATFORM (windows | macos).
+_BROWSER_PROFILES = {
+    "windows": {
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        ),
+        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "sec_ch_ua_platform": '"Windows"',
+        "li_track": (
+            '{"clientVersion":"1.13.46267","mpVersion":"1.13.46267","osName":"web",'
+            '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
+            '"mpName":"voyager-web","displayDensity":1.5,"displayWidth":1920,"displayHeight":1080}'
+        ),
+    },
+    "macos": {
+        "user_agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/vnd.linkedin.normalized+json+2.0",
-        "Accept-Language": "en-US,en;q=0.9",
-        "x-li-lang": "en_US",
-        "x-li-track": (
+        "sec_ch_ua": '"Google Chrome";v="151", "Chromium";v="151", "Not.A/Brand";v="24"',
+        "sec_ch_ua_platform": '"macOS"',
+        "li_track": (
             '{"clientVersion":"1.13.46312","mpVersion":"1.13.46312","osName":"web",'
             '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
             '"mpName":"voyager-web","displayDensity":2,"displayWidth":2940,"displayHeight":1912}'
         ),
-        "x-li-page-instance": "urn:li:page:d_flagship3_profile_view_base;dummy",
-        "x-restli-protocol-version": "2.0.0",
+    },
+}
+
+
+def browser_profile() -> dict:
+    key = clean_token(settings.LINKEDIN_BROWSER_PLATFORM).lower() or "windows"
+    return _BROWSER_PROFILES.get(key, _BROWSER_PROFILES["windows"])
+
+
+def _api_headers(csrf_token: str) -> dict:
+    """
+    Voyager JSON-API headers, matched against a REAL Chrome/Voyager request captured
+    from the browser's network tab so they're indistinguishable from the web app at
+    the header level. The stale/fake bits that used to give us away (and are now
+    fixed): an obviously-fake x-li-track clientVersion, an old User-Agent, Accept
+    +2.0 (LinkedIn uses +2.1), a "dummy" page-instance, and missing sec-* hints.
+
+    Note: no Cookie header here — cookies are managed by the client's jar so a
+    JSESSIONID rotated mid-flight (via Set-Cookie on a 302) stays in sync with csrf.
+    """
+    b = browser_profile()
+    return {
+        "accept": "application/vnd.linkedin.normalized+json+2.1",
+        "accept-language": "en-US,en;q=0.9",
         "csrf-token": csrf_token,
-        "Referer": "https://www.linkedin.com/feed/",
+        "priority": "u=1, i",
+        "referer": "https://www.linkedin.com/feed/",
+        "sec-ch-ua": b["sec_ch_ua"],
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": b["sec_ch_ua_platform"],
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": b["user_agent"],
+        "x-li-lang": "en_US",
+        "x-li-page-instance": "urn:li:page:d_flagship3_profile_view_base;" + _tracking_id(),
+        "x-li-track": b["li_track"],
+        "x-restli-protocol-version": "2.0.0",
     }
 
 
@@ -161,21 +214,18 @@ def build_html_headers() -> dict:
     navigation sends Accept: text/html plus the Sec-Fetch/Sec-CH-UA hints below.
     """
     li_at, csrf_token = _load_credentials()
+    b = browser_profile()
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": b["user_agent"],
         "Accept": (
             "text/html,application/xhtml+xml,application/xml;q=0.9,"
             "image/avif,image/webp,image/apng,*/*;q=0.8"
         ),
         "Accept-Language": "en-US,en;q=0.9",
-        # Client hints MUST agree with the User-Agent above (Chrome 151 on macOS).
-        # A mismatched fingerprint reads as session hijacking and gets li_at revoked.
-        "sec-ch-ua": '"Google Chrome";v="151", "Chromium";v="151", "Not.A/Brand";v="24"',
+        # Same browser identity as the JSON API and SDUI calls (see browser_profile).
+        "sec-ch-ua": b["sec_ch_ua"],
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"macOS"',
+        "sec-ch-ua-platform": b["sec_ch_ua_platform"],
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "none",
@@ -449,6 +499,24 @@ def _extract_picture(item: dict) -> str | None:
     return None
 
 
+def _select_profile(profiles: list[dict], handle: str) -> dict:
+    """
+    A response can contain MORE than one Profile object — notably the *viewer's own*
+    profile alongside the target's. Pick the one whose publicIdentifier/vanityName
+    matches the requested handle; otherwise fall back to the first that has a name.
+    (Without this, a request for someone else's profile can return the viewer's name.)
+    """
+    h = handle.lower()
+    for p in profiles:
+        pub = (p.get("publicIdentifier") or p.get("vanityName") or "").lower()
+        if pub and pub == h:
+            return p
+    for p in profiles:
+        if p.get("firstName") or p.get("lastName"):
+            return p
+    return profiles[0] if profiles else {}
+
+
 def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResponse:
     """
     Turn a normalized Voyager payload into a ProfileResponse.
@@ -475,20 +543,16 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
             return (by_urn.get(val) or {}).get("name") or None  # dash: URN -> Company
         return None
 
-    profile_obj: dict = {}
-    picture_url: str | None = None
+    # Pick the RIGHT profile up front (the target, not the viewer) by handle match.
+    all_profiles = [it for it in included if it.get("$type", "").endswith(".Profile")]
+    profile_obj: dict = _select_profile(all_profiles, handle)
+    picture_url: str | None = _extract_picture(profile_obj)
     experiences, educations, skills, certifications, languages = [], [], [], [], []
 
     for item in included:
         type_str = item.get("$type", "")
 
-        if type_str.endswith(".Profile"):
-            # Prefer the entry that actually carries name fields.
-            if not profile_obj or item.get("firstName"):
-                profile_obj = item
-            picture_url = picture_url or _extract_picture(item)
-
-        elif type_str.endswith(".MiniProfile"):
+        if type_str.endswith(".MiniProfile"):
             picture_url = picture_url or _extract_picture(item)
 
         elif type_str.endswith("profile.Position"):
@@ -539,6 +603,15 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     full_name = f"{first_name or ''} {last_name or ''}".strip() or handle
     picture_url = picture_url or _extract_picture(profile_obj)
 
+    # Follower count lives in a FollowingState object; match it to THIS profile's
+    # URN (there are several FollowingStates — for hashtags the person follows, etc.)
+    prof_urn = profile_obj.get("entityUrn") or ""
+    follower_count = None
+    for it in included:
+        if it.get("$type", "").endswith(".FollowingState") and prof_urn and prof_urn in (it.get("entityUrn") or ""):
+            follower_count = it.get("followerCount")
+            break
+
     geo = profile_obj.get("geoLocation")
     if isinstance(geo, str):  # dash: URN reference
         geo = by_urn.get(geo) or {}
@@ -561,6 +634,7 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
         location=Location(raw_location=raw_loc) if raw_loc else None,
         about=profile_obj.get("summary"),
         profile_image_url=picture_url,
+        follower_count=follower_count,
         experience=experiences,
         education=educations,
         skills=skills,
@@ -587,15 +661,17 @@ async def fetch_profile_sections(handle: str, html_text: str | None = None) -> d
         jar = _seed_jar()
         csrf_token = (jar.get("JSESSIONID") or "").strip('"')
         cookie_header = "; ".join(f"{c.name}={c.value}" for c in jar.jar)
-        api = _api_headers(csrf_token)
+        b = browser_profile()
         cards = await sdui_sections.fetch_section_cards(
             handle,
             html_text,
             cookie_header=cookie_header,
             csrf_token=csrf_token,
-            user_agent=api["User-Agent"],
-            li_track=api["x-li-track"],
+            user_agent=b["user_agent"],
+            li_track=b["li_track"],
             proxy=_proxy(),
+            client_hints={"sec-ch-ua": b["sec_ch_ua"], "sec-ch-ua-mobile": "?0",
+                          "sec-ch-ua-platform": b["sec_ch_ua_platform"]},
         )
         sections = sdui_sections.cards_to_sections(cards)
         sections["location"] = sdui_sections.extract_top_card_location(html_text)

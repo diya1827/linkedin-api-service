@@ -49,6 +49,7 @@ class ProfileResponse(BaseModel):
     location: Optional[Location] = None
     about: Optional[str] = None
     profile_image_url: Optional[str] = None
+    follower_count: Optional[int] = None
     experience: List[ExperienceItem] = []
     education: List[EducationItem] = []
     skills: List[str] = []

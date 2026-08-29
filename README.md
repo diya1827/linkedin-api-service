@@ -98,6 +98,7 @@ Run tests with `pip install -r requirements-dev.txt && pytest`.
 | ---------------------------- | ------------------------------------------------------- |
 | `LINKEDIN_COOKIE`            | **Recommended.** The full raw `Cookie:` header from a logged-in browser request. Includes routing/security cookies (`lidc`, `bcookie`, `liap`) that LinkedIn requires on protected endpoints. Overrides the two vars below. |
 | `LINKEDIN_LI_AT_COOKIE`      | `li_at` cookie value (used only if `LINKEDIN_COOKIE` is blank). |
+| `LINKEDIN_BROWSER_PLATFORM`  | `windows` (default) or `macos`. The browser identity sent on every request; must match the browser the cookies came from. |
 | `LINKEDIN_JSESSIONID`        | `JSESSIONID` cookie value, e.g. `ajax:1234567890` (used only if `LINKEDIN_COOKIE` is blank). |
 | `LINKEDIN_PROFILE_QUERY_ID`  | Current GraphQL `queryId` (see above). Blank → falls back to legacy REST/HTML. |
 | `LINKEDIN_PROXY`             | Optional outbound proxy (e.g. residential) — `http://user:pass@host:port`. Blank = direct. |
