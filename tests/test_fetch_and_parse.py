@@ -81,6 +81,22 @@ def test_ongoing_role_reports_present():
     assert exp.start_date == "2026-01" and exp.end_date == "Present"
 
 
+def test_picks_target_profile_not_viewer():
+    """Response contains the viewer's own profile alongside the target's — must
+    pick the one whose publicIdentifier matches the requested handle."""
+    payload = {"included": [
+        {"$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+         "entityUrn": "urn:li:fsd_profile:VIEWER", "firstName": "x", "lastName": "x",
+         "headline": "Student at x", "publicIdentifier": "some-viewer-123"},
+        {"$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+         "entityUrn": "urn:li:fsd_profile:BILL", "firstName": "Bill", "lastName": "Gates",
+         "headline": "Co-chair, Gates Foundation", "publicIdentifier": "williamhgates"},
+    ]}
+    r = ls.parse_voyager_json("u", "williamhgates", payload)
+    assert r.full_name == "Bill Gates"
+    assert r.headline == "Co-chair, Gates Foundation"
+
+
 def test_empty_payload_returns_nulls_not_errors():
     r = ls.parse_voyager_json("u", "diya", {"included": []})
     assert r.full_name == "diya" and r.location is None and r.experience == []
