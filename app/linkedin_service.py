@@ -4,6 +4,8 @@ import json
 import base64
 import html as html_lib
 import logging
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
@@ -11,7 +13,7 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import settings
-from app.schemas import ProfileResponse, Location, ExperienceItem, EducationItem
+from app.schemas import ProfileResponse, ResponseMeta, Location, ExperienceItem, EducationItem
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,45 @@ def _tracking_id() -> str:
     return base64.b64encode(os.urandom(16)).decode()
 
 
+# One browser identity for EVERY request (JSON API, document HTML, SDUI cards).
+# It must describe the browser the cookies were minted in: LinkedIn treats a
+# cookie presented from a "different" browser as session hijacking and revokes it
+# globally. Pick the profile with LINKEDIN_BROWSER_PLATFORM (windows | macos).
+_BROWSER_PROFILES = {
+    "windows": {
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        ),
+        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "sec_ch_ua_platform": '"Windows"',
+        "li_track": (
+            '{"clientVersion":"1.13.46267","mpVersion":"1.13.46267","osName":"web",'
+            '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
+            '"mpName":"voyager-web","displayDensity":1.5,"displayWidth":1920,"displayHeight":1080}'
+        ),
+    },
+    "macos": {
+        "user_agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        ),
+        "sec_ch_ua": '"Google Chrome";v="151", "Chromium";v="151", "Not.A/Brand";v="24"',
+        "sec_ch_ua_platform": '"macOS"',
+        "li_track": (
+            '{"clientVersion":"1.13.46312","mpVersion":"1.13.46312","osName":"web",'
+            '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
+            '"mpName":"voyager-web","displayDensity":2,"displayWidth":2940,"displayHeight":1912}'
+        ),
+    },
+}
+
+
+def browser_profile() -> dict:
+    key = clean_token(settings.LINKEDIN_BROWSER_PLATFORM).lower() or "windows"
+    return _BROWSER_PROFILES.get(key, _BROWSER_PROFILES["windows"])
+
+
 def _api_headers(csrf_token: str) -> dict:
     """
     Voyager JSON-API headers, matched against a REAL Chrome/Voyager request captured
@@ -66,29 +107,23 @@ def _api_headers(csrf_token: str) -> dict:
     Note: no Cookie header here — cookies are managed by the client's jar so a
     JSESSIONID rotated mid-flight (via Set-Cookie on a 302) stays in sync with csrf.
     """
+    b = browser_profile()
     return {
         "accept": "application/vnd.linkedin.normalized+json+2.1",
         "accept-language": "en-US,en;q=0.9",
         "csrf-token": csrf_token,
         "priority": "u=1, i",
         "referer": "https://www.linkedin.com/feed/",
-        "sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "sec-ch-ua": b["sec_ch_ua"],
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-platform": b["sec_ch_ua_platform"],
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-        ),
+        "user-agent": b["user_agent"],
         "x-li-lang": "en_US",
         "x-li-page-instance": "urn:li:page:d_flagship3_profile_view_base;" + _tracking_id(),
-        "x-li-track": (
-            '{"clientVersion":"1.13.46267","mpVersion":"1.13.46267","osName":"web",'
-            '"timezoneOffset":5.5,"timezone":"Asia/Calcutta","deviceFormFactor":"DESKTOP",'
-            '"mpName":"voyager-web","displayDensity":1.5,"displayWidth":1920,"displayHeight":1080}'
-        ),
+        "x-li-track": b["li_track"],
         "x-restli-protocol-version": "2.0.0",
     }
 
@@ -179,19 +214,18 @@ def build_html_headers() -> dict:
     navigation sends Accept: text/html plus the Sec-Fetch/Sec-CH-UA hints below.
     """
     li_at, csrf_token = _load_credentials()
+    b = browser_profile()
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": b["user_agent"],
         "Accept": (
             "text/html,application/xhtml+xml,application/xml;q=0.9,"
             "image/avif,image/webp,image/apng,*/*;q=0.8"
         ),
         "Accept-Language": "en-US,en;q=0.9",
-        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        # Same browser identity as the JSON API and SDUI calls (see browser_profile).
+        "sec-ch-ua": b["sec_ch_ua"],
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-platform": b["sec_ch_ua_platform"],
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "none",
@@ -268,6 +302,8 @@ async def fetch_profile_payload(handle: str) -> dict:
     query_id = clean_token(settings.LINKEDIN_PROFILE_QUERY_ID)
     last_status = "n/a"
     last_body = ""
+    gql_status: int | None = None
+    gql_empty = False  # 200 but no profile entity: not found / not visible / soft block
 
     # API strategies share a cookie jar so JSESSIONID rotation is handled once.
     async with make_voyager_client() as client:
@@ -280,9 +316,11 @@ async def fetch_profile_payload(handle: str) -> dict:
             )
             resp = await voyager_get(client, gql_url)
             logger.info("GraphQL profile fetch -> %s", resp.status_code)
+            gql_status = resp.status_code
             payload = _json_or_none(resp) if resp.status_code == 200 else None
             if _usable(payload):
                 return payload
+            gql_empty = resp.status_code == 200 and payload is not None
             last_status, last_body = resp.status_code, resp.text[:200]
             logger.warning("GraphQL fetch not usable (status %s)", resp.status_code)
 
@@ -293,7 +331,8 @@ async def fetch_profile_payload(handle: str) -> dict:
         payload = _json_or_none(resp) if resp.status_code == 200 else None
         if _usable(payload):
             return payload
-        last_status, last_body = resp.status_code, resp.text[:200]
+        if resp.status_code != 410:  # 410 = endpoint retired, says nothing about this profile
+            last_status, last_body = resp.status_code, resp.text[:200]
 
     # ---- Strategy 3: Embedded HTML JSON (separate browser-style client) ------
     html_resp = await _fetch_profile_html(handle)
@@ -307,9 +346,29 @@ async def fetch_profile_payload(handle: str) -> dict:
     if last_status == "n/a":
         last_status = html_resp.status_code
 
+    # ---- Nothing worked: say WHY, with the right status code -----------------
+    session_dead = {302, 401, 403}
+    if gql_status in session_dead or html_resp.status_code in session_dead:
+        raise HTTPException(
+            status_code=503,
+            detail="LinkedIn session rejected (expired or revoked cookies). Refresh "
+                   "LINKEDIN_LI_AT_COOKIE / LINKEDIN_JSESSIONID; GET /health reports the session state.",
+        )
+    if html_resp.status_code == 999:
+        raise HTTPException(
+            status_code=503,
+            detail="LinkedIn anti-bot layer blocked the request (HTTP 999). Back off, "
+                   "or route through LINKEDIN_PROXY.",
+        )
+    if gql_empty:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No profile found for handle '{handle}'. Either it does not exist, is "
+                   "not visible to the backing account, or LinkedIn soft-blocked the lookup.",
+        )
     hint = (
         " Set LINKEDIN_PROFILE_QUERY_ID in .env to a current GraphQL queryId, or "
-        "verify cookies via GET /api/v1/debug/auth."
+        "verify cookies via GET /health."
     )
     raise HTTPException(
         status_code=502,
@@ -584,11 +643,76 @@ def parse_voyager_json(profile_url: str, handle: str, data: dict) -> ProfileResp
     )
 
 
-async def fetch_linkedin_profile_voyager(profile_url: str) -> ProfileResponse:
-    """Top-level entry: URL -> fetched payload -> parsed ProfileResponse."""
+async def fetch_profile_sections(handle: str, html_text: str | None = None) -> dict:
+    """
+    Experience / Education / Skills / Certifications / Languages via the SDUI
+    lazy-card endpoint (see app/sdui_sections.py). Best-effort: returns empty
+    lists on any failure so the intro card is never lost because of a section.
+    """
+    from app import sdui_sections
+
+    try:
+        if html_text is None:
+            html_resp = await _fetch_profile_html(handle)
+            if html_resp.status_code != 200:
+                logger.warning("Sections: profile HTML fetch -> %s", html_resp.status_code)
+                return sdui_sections.cards_to_sections({})
+            html_text = html_resp.text
+        jar = _seed_jar()
+        csrf_token = (jar.get("JSESSIONID") or "").strip('"')
+        cookie_header = "; ".join(f"{c.name}={c.value}" for c in jar.jar)
+        b = browser_profile()
+        cards = await sdui_sections.fetch_section_cards(
+            handle,
+            html_text,
+            cookie_header=cookie_header,
+            csrf_token=csrf_token,
+            user_agent=b["user_agent"],
+            li_track=b["li_track"],
+            proxy=_proxy(),
+            client_hints={"sec-ch-ua": b["sec_ch_ua"], "sec-ch-ua-mobile": "?0",
+                          "sec-ch-ua-platform": b["sec_ch_ua_platform"]},
+        )
+        sections = sdui_sections.cards_to_sections(cards)
+        sections["_top"] = sdui_sections.extract_top_card(html_text)
+        sections["_cards"] = sorted(cards)
+        return sections
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Sections fetch failed, returning empty sections: %s", exc)
+        return sdui_sections.cards_to_sections({})
+
+
+async def fetch_linkedin_profile_voyager(profile_url: str, include_sections: bool = True) -> ProfileResponse:
+    """Top-level entry: URL -> fetched payload -> parsed ProfileResponse, then
+    (optionally) the lazily-loaded sections merged on top. The graphql intro
+    card only ever yields the top card, so sections come from the SDUI path;
+    anything the card path already found is kept when the SDUI path is empty."""
+    started = time.monotonic()
     handle = extract_handle_from_url(profile_url)
     data = await fetch_profile_payload(handle)
-    return parse_voyager_json(profile_url, handle, data)
+    profile = parse_voyager_json(profile_url, handle, data)
+    cards: list[str] = []
+    if include_sections:
+        sections = await fetch_profile_sections(handle)
+        top = sections.pop("_top", {}) or {}
+        cards = sections.pop("_cards", [])
+        for field, values in sections.items():
+            if values:
+                setattr(profile, field, values)
+        if profile.location is None and top.get("location"):
+            profile.location = Location(raw_location=top["location"])
+        profile.pronouns = top.get("pronouns")
+        profile.connections = top.get("connections")
+        profile.followers = top.get("followers")
+    profile.meta = ResponseMeta(
+        fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+        sections_requested=include_sections,
+        section_cards_fetched=cards,
+    )
+    return profile
 
 
 # --------------------------------------------------------------------------- #

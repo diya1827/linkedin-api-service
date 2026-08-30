@@ -53,7 +53,7 @@ def test_health_ok_and_not_configured(monkeypatch):
 def test_repeat_request_served_from_cache(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_fetch(url):
+    async def fake_fetch(url, **kwargs):
         calls["n"] += 1
         return ProfileResponse(profile_url=url, profile_handle="foo", full_name="Foo Bar")
 
@@ -66,12 +66,13 @@ def test_repeat_request_served_from_cache(monkeypatch):
     r2 = client.post("/api/v1/parse-profile", json=body)
 
     assert r1.status_code == 200 and r2.status_code == 200
+    assert r2.json()["meta"] is None or r2.json()["meta"]["cached"] is True
     assert r1.json()["full_name"] == "Foo Bar"
     assert calls["n"] == 1  # second request served from cache, no second fetch
 
 
 def test_rate_limit_returns_429(monkeypatch):
-    async def fake_fetch(url):
+    async def fake_fetch(url, **kwargs):
         return ProfileResponse(profile_url=url, profile_handle="foo", full_name="Foo")
 
     monkeypatch.setattr(main, "fetch_linkedin_profile_voyager", fake_fetch)

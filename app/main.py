@@ -102,19 +102,25 @@ async def parse_profile(payload: ProfileRequest, request: Request):
 
     # Validate/extract handle up front so the cache key is stable and bad URLs 400 fast.
     handle = extract_handle_from_url(str(payload.profile_url))
+    cache_key = f"{handle}|sections={int(payload.include_sections)}"
 
-    cached = _cache_get(handle)
+    cached = _cache_get(cache_key)
     if cached is not None:
-        return cached
+        hit = cached.model_copy(deep=True)
+        if hit.meta is not None:
+            hit.meta.cached = True
+        return hit
 
     try:
-        response_data = await fetch_linkedin_profile_voyager(str(payload.profile_url))
+        response_data = await fetch_linkedin_profile_voyager(
+            str(payload.profile_url), include_sections=payload.include_sections
+        )
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(exc)}")
 
-    _cache_set(handle, response_data)
+    _cache_set(cache_key, response_data)
     return response_data
 
 

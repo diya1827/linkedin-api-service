@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, HttpUrl
 
 class Location(BaseModel):
@@ -13,6 +13,7 @@ class ExperienceItem(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = "Present"
     description: Optional[str] = None
+    employment_type: Optional[str] = None
 
 class EducationItem(BaseModel):
     institution: Optional[str] = None
@@ -23,6 +24,20 @@ class EducationItem(BaseModel):
 
 class ProfileRequest(BaseModel):
     profile_url: HttpUrl
+    # Sections (experience/education/skills/...) cost ~8 extra LinkedIn calls per
+    # profile. On by default because they are the point of the service; set
+    # false for the cheap intro-card-only path.
+    include_sections: bool = True
+
+class ResponseMeta(BaseModel):
+    """Provenance for the caller: when it was fetched, how long it took, whether
+    it came from the cache, and which SDUI section cards were actually read."""
+    fetched_at: Optional[str] = None
+    elapsed_ms: Optional[int] = None
+    cached: bool = False
+    sections_requested: bool = True
+    section_cards_fetched: List[str] = []
+
 
 class ProfileResponse(BaseModel):
     profile_url: str
@@ -40,3 +55,11 @@ class ProfileResponse(BaseModel):
     skills: List[str] = []
     certifications: List[str] = []
     languages: List[str] = []
+    volunteering: List[ExperienceItem] = []  # title=role, company_name=organisation
+    pronouns: Optional[str] = None
+    connections: Optional[str] = None  # LinkedIn shows "500+" past 500
+    followers: Optional[str] = None    # as displayed on the top card, e.g. "1M"
+    # Any other section the profile carries (honors_and_awards, projects,
+    # publications, courses, ...) as {section: [{title, details[]}]}.
+    additional_sections: Dict[str, List[dict]] = {}
+    meta: Optional[ResponseMeta] = None

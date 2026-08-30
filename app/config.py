@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # so this stays within the "httpx only, no browser" constraint.)
     LINKEDIN_PROXY: str = ""
 
+    # Which browser identity to present: "windows" or "macos". MUST match the
+    # browser the cookies were copied from (LinkedIn revokes a cookie that shows
+    # up from a different browser fingerprint). See browser_profile().
+    LINKEDIN_BROWSER_PLATFORM: str = "windows"
+
     # Expose the /api/v1/debug/* routes. These let a caller drive arbitrary
     # Voyager requests using the server's session cookie, so they MUST stay off
     # on any public deployment. Off by default; enable only for local debugging.
