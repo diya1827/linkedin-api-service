@@ -24,3 +24,18 @@ __pycache__/
 
 # Docs (not needed at runtime)
 README.md
+
+# Local reverse-engineering scratch: never ship (carries live session data)
+*.har
+p.html
+detail_*.html
+bundles/
+card_*.txt
+card_body.json
+exp_*.txt
+exp_body*.json
+async_requests.json
+live.json
+server.log
+debug_dump.json
+tests/
